@@ -37,16 +37,10 @@ knitr::include_graphics("TX_histo.PNG")
 ```
 
 
-On détermine également une vétusté des ouvrages en fonction des âges limites déjà identifiés pour les liaisons aériennes.<br>
+
 ```{r, echo=FALSE, out.width = '100%'}
 knitr::include_graphics("vet.PNG")
 ```
-<br>
-Pour les liaisons souterraines, on prend un âge limite de 35 ans (valeur arbitraire où l'on observe une cassure sur le comportment des LS). 
-Pour calculer la vétusté, on utlise en revanche une méthode linéeaire en cas de dépassement de l'âge limite et non quadratique pour pouvoir bien comparer les liaisons. De la même façon que sur l'âge, la vétusté se calcule comme maximum entre les supports et conducteurs pour les LA.
-
-
-Sachant que les données patrimoniales sont référencées depuis 2013, les données d'indisponibilité fortuites (IFO) présents dans SIQUAEL ne sont récoltés que depuis 2013 sur les ouvrages valides d'après INFOREF.
 
 
 ```{r echo=FALSE}
@@ -117,7 +111,7 @@ IFO_LS <-IFO %>% filter(LONGUEUR_LS/LONGUEUR_TOT>0.9)  %>% rename(DATE=DATE_SOUT
 # Analyse patrimoniale des LIT
 
 ## Cartographie des liaisons en 2024
-Cliquer sur les boutons en haut à gauche de la carte pour visualiser les liaisons selon différentes catégories.
+
 ```{r, echo=FALSE}
 MAP <- LIT_XY %>% filter(AN_REF==2024) %>% select(OUV_COD_NAT,CONFIGURATION,NT_LIT,LONGUEUR,AGE,NATURE_COND,NATURESUBJECTILE,TECHNOLOGIE,HTB,Couleur) %>% st_simplify(dTolerance = 200) %>% st_transform(4326) %>% mutate(dashstyle=ifelse(CONFIGURATION=="Souterraine","5, 5","")) %>% filter(!OUV_COD_NAT %in% "CHAFAL41ZC.R5") %>% filter(!st_is_empty(geometry))
 
@@ -284,10 +278,6 @@ leaflet(options = leafletOptions(zoomControl = FALSE,zoomSnap = 0.1)) %>%
 # Analyse des indisponibilités fortuites Siquael
 
 
-On récupère l'ensemble des indisponibilités fortuites (IFO) >20 min sur les liaisons valides depuis SIQUAEL.
-IFO courtes: < 120h, IFO longues : > 120h
-On retire de l'échantillon les IFO>4000h. En effet, il existe des IFO qui ne sont pas réparées rapidement en raison du faible de niveau de service des liaisons ce qui fausse les taux d'indisponibilités à prendre en compte.
-
 ## Typologie des IFO  {.tabset }
 
 
@@ -346,7 +336,7 @@ leaflet(IFO_XY ,options = leafletOptions(zoomControl = FALSE,zoomSnap = 0.1)) %>
 
 
 ### Taux de défaillance
-Sur une période de suivi de 12 ans sur les liaisons actuelles.
+
 ```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
 LIT_TX <- LIT_XY %>% filter(AN_REF==2024)%>% left_join(IFO %>% filter(TYPE_IFO!="TRES_LONG") %>%  group_by(id) %>% tally(),by="id") %>%
   mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
@@ -378,7 +368,7 @@ leaflet(options = leafletOptions(zoomControl = FALSE,zoomSnap = 0.1)) %>%
 
 
 ### Durée de défaillance
-Sur une période de suivi de 12 ans sur les liaisons actuelles.
+
 ```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
 LIT_TX <- LIT_XY %>% filter(AN_REF==2024)%>% left_join(IFO %>% filter(TYPE_IFO!="TRES_LONG") %>%  group_by(id) %>%  summarize(n=sum(ERX_DT_TOTH,na.rm=T)),by="id") %>%
   mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
@@ -414,7 +404,6 @@ leaflet(options = leafletOptions(zoomControl = FALSE,zoomSnap = 0.1)) %>%
 
 
 ## Durée des IFO  {.tabset }
-Pour la suite, on considèrera une liaison aérienne si la longueur aérienne dépasse 90% du total. De même, on considèrera une liaison souterraine si la longueur souterraine dépasse 90% du total.
 
 ### Liaisons aériennes {.tabset}
 
@@ -707,8 +696,6 @@ LIT_TX %>%    tbl_custom_summary(    include = c(HTB,CAT_LONG,NATURESUBJECTILE,N
 
 ## Estimation des événements réccurents {.tabset }
 
-On calcule le MCF (mean cumulative function) c'est à dire, le nombre cumulé d'IFO selon l'âge de la LIT qu'on peut associer à l'estimateur de Nelson-Aalen à l'IFO.
-
 
 ### Liaisons aériennes {.tabset}
 
@@ -782,9 +769,6 @@ cat("  \n")
 
 
 ## Temps cumulé d'indisponibilité {.tabset }
-
-En détournant la fonction MCF (mean cumulative function) pour calculer les événements réccurents, on peut cumuler le temps des indisponibilités au lieu de compter simplement les indisponibilités.
-Dans ce cadre, il est désormais inutile de distinguer IFO courtes et IFO longues puisque la durée d'indisponibilité est intégrée.
 
 
 
@@ -956,7 +940,7 @@ LIT_TX_LSL <- LS %>% left_join(IFO_LS %>% filter(TYPE_IFO=="LONG") %>%  group_by
 ## Longueur {.tabset }
 
 ### Liaisons aériennes {.tabset}
-La corrélation à la longueur est seulement valable pour le 225 kV et 400 kV. Il n'y a pas significativité pour le HTB1 et le 150 kV.
+
 ```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
 
 LIT_TX <- LIT_TX_LA
@@ -976,7 +960,7 @@ cat("  \n")
 
 
 ### Liaisons souterraines {.tabset}
-On n'observe pas de corrélation avec la longueur.
+
 ```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
 
 LIT_TX <- LIT_TX_LS
@@ -1001,7 +985,7 @@ cat("  \n")
 ## Age {.tabset }
 
 ### Liaisons aériennes {.tabset}
-On observe une corrélation avec l'âge quelque soit le niveau de tension.
+
 ```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
 
 LIT_TX <- LIT_TX_LA
@@ -1022,7 +1006,7 @@ cat("  \n")
 
 
 ### Liaisons souterraines {.tabset}
-On observe une corrélation avec l'âge hormis 90 kV où c'est peu significatif.
+
 ```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
 
 LIT_TX <- LIT_TX_LS
@@ -1047,7 +1031,7 @@ cat("  \n")
 ## Données catégorielles {.tabset }
 
 ### Liaisons aériennes {.tabset }
-On observe une corrélation avec la tension hormis HTA, le support, le conducteur, la corrosion, l'éligibilité GAELA, le niveau de flux.
+
 ```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
 
 LIT_TX <- LIT_TX_LA
@@ -1069,7 +1053,7 @@ cat("  \n")
 
 
 ### Liaisons souterraines {.tabset }
-On observe une corrélation qu'avec la tension sur la HTA et HTB1
+
 ```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
 
 LIT_TX <- LIT_TX_LS
@@ -1087,198 +1071,3 @@ cat("  \n")
 
 ```
 
-
-
-## Choix des déterminants multiples {.tabset }
-
-A travers l'ensemble des modèles utilisés, le modèle binomial négatif est le meilleur. <br>
-Il sert à modéliser des comptages (nombre d’événements, incidents, pannes, etc.), comme un modèle de Poisson, mais il est plus flexible en prenant en compte la surdispersion.<br>
-On distingue ici les IFO courtes des IFO longues.
-
-
-### Liaisons aériennes  {.tabset }
-```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
-
-
-choix <- data_frame(type=c("LIT_TX_LAC","LIT_TX_LAL"),lib=c("IFO courtes","IFO longues"),xmin=c(0.006,0.01),xmax=c(20,1),ymin=c(0.006,0.003),ymax=c(1,1))
-
-for(i in 1:nrow(choix)) {
-  cat("  \n####",  choix$lib[i], " \n")
-  
-LIT_TX <- get(choix$type[i])
-
-cat(paste0("Modélisation binomiale négative avec l'ensemble des paramètres"))
-model <- MASS::glm.nb(nb ~  NT_LIT + LONGUEUR  + AGE+VET+ Q999+CORROSION+NATURE_COND+NATURESUBJECTILE+GAELA_2025 + offset(log(AN_SURV)), data =  LIT_TX)
-
-anova(model, test="Chisq") %>% as.data.frame() %>%  rownames_to_column("Variable") %>%
-  mutate_at(vars(3), ~ round(., 2)) %>%mutate_at(vars(5), ~ round(., 1)) %>% mutate_at(vars(6), ~ formatC(., format = "e", digits = 1)) %>%
-  kable(caption="Analyse de la variance ANOVA")%>% kable_styling(full_width = FALSE) %>%row_spec(0:length(attr(terms(model), "term.labels"))+1, extra_css = "line-height: 0.4;") %>%  print()
-
-cat(paste0("L'âge et la tension sont les variables les plus explicatives. La longueur est secondaire, on la prend tout de même, on voyait principalement un effet sur le 225kV et le 400 kV lorsq'on testait indépendamment la corrélation à la longueur.L'âge est plus explicatif que la vétusté."))
-
-car::vif(model)%>%  as.data.frame() %>% rownames_to_column("Variable") %>%
-  mutate_at(vars(2), ~ round(., 2)) %>%mutate_at(vars(4), ~ round(., 4)) %>%
-  kable(caption="Détermination des variables colinéaires- VIF")  %>%kable_styling(full_width = FALSE) %>% row_spec(0:length(attr(terms(model), "term.labels")), extra_css = "line-height: 0.4;") %>%  print()
-
-
-cat(paste0("La vétusté est colinéaire à l'âge"))
-cat("  \n") 
-
-cat(paste0("On recalcule le nouveau modèle selon l'âge la tension et la longueur"))
-
-model <- MASS::glm.nb(nb ~  NT_LIT + LONGUEUR  + AGE+ offset(log(AN_SURV)), data =  LIT_TX)
-cat("  \n") 
-
-LIT_TX$pearson_res <- FALSE
-LIT_TX$pearson_res[which(DHARMa::simulateResiduals(model)$scaledResiduals > 0.99)] <- TRUE 
-
-
-cat(paste0("On détermine le ratio de dipersion de Pearson pour estimer la surdispersion"))
-print((sum(residuals(model, type = "pearson")^2) / df.residual(model)) %>%   kable(caption="ratio de dipersion de Pearson "))
-cat(paste0("Il y a encore de la surdispersion malgré l'adoption d'un modèle binomial négatif"))
-
-cat("  \n") 
-cat(paste0("Test DHARMA QQ-plot"))
-DHARMa::plotQQunif(DHARMa::simulateResiduals(model))
-
-cat("  \n") 
-cat(paste0("On détermine les outliers du modèle à partir des valeurs des résidus de Pearson"))
-print(ggplot(LIT_TX, aes(y = fitted(model)/AN_SURV, x = TX, color = pearson_res)) +
-  geom_point() +  
-  scale_color_manual(values = c("black","red")) +
-  labs(title = "Outliers des résidus de Pearson",y = "Taux modélisé du binomial négatif", x = "Taux de défaillance annuel") +  theme_bw()+   
-  theme(text=element_text(size=14),panel.grid.major = element_line(color = "gray", size =0.2),legend.text = element_text(size = 10),
-  legend.key.size = unit(0.45, "cm")) +
-    scale_x_log10(limits=c(choix$xmin[i],choix$xmax[i]),breaks = seq(0,choix$xmax[i],0.1)) +
-    scale_y_log10(limits=c(choix$ymin[i],choix$ymax[i]),breaks = seq(0,choix$ymax[i],0.1))) 
-cat(paste0("Il y a de 1% d'outliers qui dégradent la modélisation"))
-cat("  \n") 
-
-
-cat(paste0("On retire les outliers pour améliorer le modèle"))
-LIT_TX <- LIT_TX %>% filter(pearson_res==FALSE)
-model_outlier <- MASS::glm.nb(nb ~  NT_LIT + LONGUEUR  + AGE+ offset(log(AN_SURV)), data =  LIT_TX)
-
-performance::compare_performance(model,model_outlier)%>% as.data.frame() %>% select(1:3,BIC)%>%  
-  kable(caption="Tableau de performance") %>%kable_styling(full_width = FALSE) %>% row_spec(1:2, extra_css = "line-height: 0.7;")  %>% print()
-
-cat(paste0("En retirant 1% des données, on améliore significativement le modèle"))
-
-cat("  \n") 
-cat(paste0("Test DHARMA QQ-plot"))
-DHARMa::plotQQunif(DHARMa::simulateResiduals(model_outlier))
-
-
-cat("  \n") 
-cat(paste0("On détermine le ratio de dipersion de Pearson pour estimer la surdispersion"))
-print((sum(residuals(model_outlier, type = "pearson")^2) / df.residual(model_outlier)) %>%   kable(caption="ratio de dipersion de Pearson"))
-
-
-summary(model_outlier)$coefficients[c(1,3,4,5,7,8,9),] %>% as.data.frame()  %>% rename(pvalue=4) %>% mutate(exp(Estimate))%>% 
-  mutate_at(vars(1:3), ~ round(., 2)) %>%
-  mutate_at(vars(5), ~ round(., 4)) %>% mutate_at(vars(4), ~ formatC(., format = "e", digits = 1)) %>%
-  kable(caption="Coefficients du modèle (exp)") %>%kable_styling(full_width = FALSE,bootstrap_options = c("hover", "condensed")) %>% row_spec(1:7, extra_css = "line-height: 0.5;") %>% print()
-  
-
-cat(paste0("On peut également tester un modèle d'arbre Rpart, pour couper en branches le taux de défaillance\n"))
-modele_rpart <- rpart(TX ~ LONGUEUR + AGE + NT_LIT,data = LIT_TX,method = "anova",
-                      control = rpart.control(xval = 30, cp = 0,minbucket =round(nrow(LIT_TX)/10,0),maxdepth=2))
-best_cp <- modele_rpart$cptable[which.min(modele_rpart$cptable[, "xerror"]), "CP"]
-modele_rpart_opt <-prune(modele_rpart, cp = best_cp)
-
-invisible(rpart.plot(modele_rpart_opt, type = 2, extra = 101, under = TRUE,main = "Arbre Rpart du taux de défaillance"))
-cat(paste0("L'arbre est plus difficilement interprétable, on préferera garder le modèle binomial négatif\n"))
-
-
-assign(paste0("model_LA", i), model_outlier)
-}
-
-
-```
-
-
-
-### Liaisons souterraines {.tabset }
-```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
-
-choix <- data_frame(type=c("LIT_TX_LSC","LIT_TX_LSL"),lib=c("IFO courtes","IFO longues"),xmin=c(0.05,0.007),xmax=c(4,2),ymin=c(0.05,0.003),ymax=c(1,1))
-
-for(i in 1:nrow(choix)) {
-  cat("  \n####",  choix$lib[i], " \n")
-  
-LIT_TX <- get(choix$type[i])
-
-cat(paste0("Modélisation binomiale négative avec l'ensemble des paramètres"))
-model <- MASS::glm.nb(nb ~  NT_LIT + LONGUEUR  + AGE+ Q999+TECHNOLOGIE + offset(log(AN_SURV)), data =  LIT_TX)
-
-anova(model, test="Chisq") %>% as.data.frame() %>%  rownames_to_column("Variable") %>%
-  mutate_at(vars(3), ~ round(., 2)) %>%mutate_at(vars(5), ~ round(., 1)) %>% mutate_at(vars(6), ~ formatC(., format = "e", digits = 1)) %>%
-  kable(caption="Analyse de la variance ANOVA")%>% kable_styling(full_width = FALSE) %>%row_spec(0:length(attr(terms(model), "term.labels"))+1, extra_css = "line-height: 0.4;") %>%  print()
-
-cat(paste0("L'âge et la tension sont les variables les plus explicatives, la longueur ne l'est pas"))
-cat("  \n") 
-
-
-cat(paste0("On recalcule le nouveau modèle selon l'âge la tension "))
-cat("  \n") 
-model <- MASS::glm.nb(nb ~  NT_LIT  + AGE+ offset(log(AN_SURV)), data =  LIT_TX)
-
-LIT_TX$pearson_res <- FALSE
-LIT_TX$pearson_res[which(DHARMa::simulateResiduals(model)$scaledResiduals > 0.995)] <- TRUE 
-
-cat(paste0("On détermine le ratio de dipersion de Pearson pour estimer la surdispersion"))
-print((sum(residuals(model, type = "pearson")^2) / df.residual(model)) %>%   kable(caption="ratio de dipersion de Pearson"))
-cat(paste0("Il y a encore de la surdispersion malgré l'adoption d'un modèle binomial négatif"))
-cat("  \n") 
-cat(paste0("Test DHARMA QQ-plot"))
-DHARMa::plotQQunif(DHARMa::simulateResiduals(model)) 
-cat(paste0("QQ-plot modélisé passe les tests"))
-
-cat(paste0("On détermine les outliers du modèle à partir des valeurs des résidus de Pearson"))
-ggplot(LIT_TX, aes(y = fitted(model)/AN_SURV, x = TX, color = pearson_res)) +
-  geom_point() +
-  scale_color_manual(values = c("black","red")) +
-  labs(title = "Outliers des résidus de Pearson",y = "Taux modélisé du binomial négatif", x = "Taux de défaillance annuel") +  theme_bw()+
-  theme(text=element_text(size=14),panel.grid.major = element_line(color = "gray", size =0.2),legend.text = element_text(size = 10),
-  legend.key.size = unit(0.45, "cm")) +
-  scale_x_log10(limits=c(choix$xmin[i],choix$xmax[i]),breaks = seq(0,choix$xmax[i],0.1)) +
-  scale_y_log10(limits=c(choix$ymin[i],choix$ymax[i]),breaks = seq(0,choix$ymax[i],0.1)) %>% print()
-cat(paste0("Il y a de 1% d'outliers qui dégradent la modélisation"))
-cat("  \n") 
-
-cat(paste0("On retire les outliers pour améliorer le modèle"))
-LIT_TX <- LIT_TX %>% filter(pearson_res==FALSE)
-model_outlier <- MASS::glm.nb(nb ~  NT_LIT  + AGE+ offset(log(AN_SURV)), data =  LIT_TX)
-
-performance::compare_performance(model,model_outlier)%>% as.data.frame() %>% select(1:3,BIC)%>%  
-  kable(caption="Tableau de performance") %>%kable_styling(full_width = FALSE) %>% row_spec(1:2, extra_css = "line-height: 0.7;")  %>% print()
-cat(paste0("En retirant 1% des données, on améliore significativement le modèle"))
-cat("  \n") 
-cat(paste0("Test DHARMA QQ-plot"))
-DHARMa::plotQQunif(DHARMa::simulateResiduals(model_outlier))
-
-
-cat(paste0("On détermine le ratio de dipersion de Pearson pour estimer la surdispersion"))
-print((sum(residuals(model_outlier, type = "pearson")^2) / df.residual(model_outlier)) %>%   kable(caption="ratio de dipersion de Pearson "))
-
-summary(model_outlier)$coefficients[c(1,4,7,9),] %>% as.data.frame()  %>% rename(pvalue=4) %>% mutate(exp(Estimate))%>% 
-  mutate_at(vars(1:3), ~ round(., 2)) %>%
-  mutate_at(vars(5), ~ round(., 4)) %>% mutate_at(vars(4), ~ formatC(., format = "e", digits = 1)) %>%
-  kable(caption="Coefficients du modèle (exp)") %>%kable_styling(full_width = FALSE,bootstrap_options = c("hover", "condensed")) %>% row_spec(1:4, extra_css = "line-height: 0.5;") %>% print()
-
-
-
-cat(paste0("On peut également tester un modèle d'arbre Rpart, pour couper en branches le taux de défaillance\n"))
-modele_rpart <- rpart(TX ~ LONGUEUR + AGE + NT_LIT,data = LIT_TX,method = "anova",
-                      control = rpart.control(xval = 30, cp = 0,minbucket =round(nrow(LIT_TX)/10,0),maxdepth=2))
-best_cp <- modele_rpart$cptable[which.min(modele_rpart$cptable[, "xerror"]), "CP"]
-modele_rpart_opt <-prune(modele_rpart, cp = best_cp)
-
-invisible(rpart.plot(modele_rpart_opt, type = 2, extra = 101, under = TRUE,main = "Arbre Rpart du taux de défaillance"))
-cat(paste0("L'arbre est plus difficilement interprétable, on préferera garder le modèle binomial négatif\n"))
-
-assign(paste0("model_LS", i), model_outlier)
-}
-
-
-```
