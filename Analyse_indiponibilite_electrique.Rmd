@@ -1,0 +1,1284 @@
+---
+title: "Etude sur l'indisponibilité des liaisons"
+author: "Oumar Mahamat"
+date: "20/05/2025"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+set.seed(123)
+library(rpart)
+library(rpart.plot)
+library(treemapify)
+library(survival)
+library(survminer)
+library(kableExtra)
+library(gtsummary)
+library(ggfortify)
+library(reda)
+library(reReg)
+library(leaflet)
+library(sf)
+library(ggpmisc)
+library(data.table)
+library(tidyverse)
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE, message = FALSE)
+```
+
+# Contexte
+Les données normatives d'indisponibilité des liaisons sont utilisées pour valoriser de manière technico-économique des solutions sz développement de réseau. Ces données n'ont pas été mis à jour depuis plus de 10 ans, la dernière mise à jour datant de la note dite Duplan. Auparavant, les données utilisées séparaient les indisponibilités en données sur les cellules et sur la partie liaison, elles ont été mutualisées dans une relation affine avec une partie fixe et une partie variable selon la longueur des ouvrages. Cette variabilité s'applique aujourd'hui uniquement sur les indisponibilités fortuites courtes (IFO <120h) des liaisons aériennes. De plus, une liste d'ouvrages atypiques recense les liaisons qui sont plus défaillantes que le taux moyen fourni, il est nécessaire d'utliliser des taux d'indisponibilté spécifiques sur ces ouvrages même si la particularisation des taux n'est pas réalisée en pratique selon le REX.  
+
+
+```{r, echo=FALSE, out.width = '100%'}
+knitr::include_graphics("TX_histo.PNG")
+```
+
+
+On détermine également une vétusté des ouvrages en fonction des âges limites déjà identifiés pour les liaisons aériennes.<br>
+```{r, echo=FALSE, out.width = '100%'}
+knitr::include_graphics("vet.PNG")
+```
+<br>
+Pour les liaisons souterraines, on prend un âge limite de 35 ans (valeur arbitraire où l'on observe une cassure sur le comportment des LS). 
+Pour calculer la vétusté, on utlise en revanche une méthode linéeaire en cas de dépassement de l'âge limite et non quadratique pour pouvoir bien comparer les liaisons. De la même façon que sur l'âge, la vétusté se calcule comme maximum entre les supports et conducteurs pour les LA.
+
+
+Sachant que les données patrimoniales sont référencées depuis 2013, les données d'indisponibilité fortuites (IFO) présents dans SIQUAEL ne sont récoltés que depuis 2013 sur les ouvrages valides d'après INFOREF.
+
+
+```{r echo=FALSE}
+source('graph_ifo.R', encoding = "UTF-8") # Fonctions des graphes
+
+GAELA <- read.csv2("gaela.csv") %>%
+  mutate(GAELA_2025=ifelse(AN_GAELA>0&AN_GAELA<2025,"Eligible 2024",ifelse(AN_GAELA>0&AN_GAELA<2041,"Non éligible","Non éligible"))) %>%
+  select(OUV_COD_NAT,BRANCHE,GAELA_2025,AN_GAELA) %>% group_by(OUV_COD_NAT) %>% arrange(BRANCHE) %>% slice(1) %>% ungroup() %>% select(-BRANCHE)
+
+
+LIT <- readRDS("LIT.RDS") %>% group_by(OUV_COD_NAT) %>% mutate(DT_DEB= map_dbl(list_AN, min)) %>% mutate(DT_FIN=map_dbl(list_AN, max)) %>% ungroup() %>% mutate(id=paste0(OUV_COD_NAT,"-",VERSION_TOT)) %>%   mutate(AGE=ifelse(coalesce(LONGUEUR_LA,0)/LONGUEUR_TOT>0.9,as.numeric(as.Date(paste0(AN_REF,"-12-31"),origin="1970-01-01")-DATE_AER)/365.25,
+                                                                  ifelse(coalesce(LONGUEUR_LS,0)/LONGUEUR_TOT>0.9,as.numeric(as.Date(paste0(AN_REF,"-12-31"),origin="1970-01-01")-DATE_SOUT)/365.25,
+                                                                  as.numeric(as.Date(paste0(AN_REF,"-12-31"),origin="1970-01-01")-pmin(DATE_AER,DATE_SOUT,na.rm=T))/365.25))) %>%  mutate(LONGUEUR=LONGUEUR_TOT) %>% mutate(CORROSION=as.factor(CORROSION)) %>% 
+mutate(NATURE_COND=ifelse(NATURE_COND=="ALUMINIUM+ACIER/ALMELEC+ACIER","ALU+ACIER\nALMELEC+ACIER",NATURE_COND))%>% mutate(NATURE_COND=ifelse(NATURE_COND=="CUIVRE/ALUMINIUM","CUIVRE/ALU",NATURE_COND)) %>% 
+mutate(TECHNOLOGIE=str_replace_all(TECHNOLOGIE,"Synthétique","Synth.")) %>% left_join(GAELA,by="OUV_COD_NAT") %>% mutate(GAELA_2025=coalesce(GAELA_2025,"Non éligible"))
+
+
+LA <- LIT %>% filter(LONGUEUR_LA/LONGUEUR_TOT>0.9) %>% rename(DATE=DATE_AER) %>% mutate(LONGUEUR=LONGUEUR_LA) %>% 
+  select(id,OUV_COD_NAT,NT_LIT,DATE,HTB,AN_REF,DT_DEB,DT_FIN,LONGUEUR,DATE_COND,NATURE_COND,DATE_SUPPORT,NATURESUBJECTILE,CORROSION,TECHNOLOGIE,AGE_SUP_MAX,Q999,GAELA_2025) %>% 
+  mutate(DATE=as.Date(ifelse(is.na(DATE),as.Date(pmin(DATE_SUPPORT,DATE_COND,na.rm = T)),DATE),origin="1970-01-01")) %>% filter(!is.na(DATE)) %>% 
+  mutate(AGE=as.numeric(as.Date(paste0(AN_REF,"-12-31"),origin="1970-01-01")-DATE)/365.25) %>% 
+  mutate(AGE_LIT_DEB=as.numeric(as.Date(paste0(DT_DEB,"-12-31"),origin="1970-01-01")-DATE)/365.25) %>% 
+  mutate(VET_SUP_LIT=as.numeric(as.Date(paste0(AN_REF,"-12-31"),origin="1970-01-01")-as.Date(DATE_SUPPORT))/(365.25*AGE_SUP_MAX)) %>%
+  mutate(VET_COND_LIT=as.numeric(as.Date(paste0(AN_REF,"-12-31"),origin="1970-01-01")-as.Date(DATE_COND))/(365.25*85))  %>%
+  mutate(VET=pmax(VET_SUP_LIT,VET_COND_LIT,na.rm=T)) %>% select(-VET_SUP_LIT,-VET_COND_LIT) %>% 
+  mutate(VET_SUP_LIT_D=as.numeric(as.Date(paste0(DT_DEB,"-12-31"),origin="1970-01-01")-as.Date(DATE_SUPPORT))/(365.25*AGE_SUP_MAX)) %>%
+  mutate(VET_COND_LIT_D=as.numeric(as.Date(paste0(DT_DEB,"-12-31"),origin="1970-01-01")-as.Date(DATE_COND))/(365.25*85))  %>%
+  mutate(VET_LIT_DEB=pmax(VET_SUP_LIT_D,VET_COND_LIT_D,na.rm=T)) %>% select(-VET_SUP_LIT_D,-VET_COND_LIT_D)
+
+LS <- LIT %>% filter(LONGUEUR_LS/LONGUEUR_TOT>0.9)  %>% rename(DATE=DATE_SOUT)  %>% mutate(LONGUEUR=LONGUEUR_LS) %>% 
+  select(id,OUV_COD_NAT,NT_LIT,DATE,HTB,AN_REF,DT_DEB,DT_FIN,LONGUEUR,DATE_COND,NATURE_COND,DATE_SUPPORT,NATURESUBJECTILE,CORROSION,TECHNOLOGIE,AGE_SUP_MAX,Q999,GAELA_2025) %>% 
+  filter(!is.na(DATE)) %>% 
+  mutate(AGE=as.numeric(as.Date(paste0(AN_REF,"-12-31"),origin="1970-01-01")-DATE)/365.25) %>%
+  mutate(AGE_LIT_DEB=as.numeric(as.Date(paste0(DT_DEB,"-12-31"),origin="1970-01-01")-DATE)/365.25) %>% 
+  mutate(VET=AGE/35) %>% mutate(VET_LIT_DEB=AGE_LIT_DEB/35)
+
+LIT_XY <- readRDS("LIT_XY.RDS") %>% filter(OUV_COD_NAT %in% LIT$OUV_COD_NAT) %>% select(OUV_COD_NAT) %>% right_join(LIT,by="OUV_COD_NAT") %>% st_as_sf(crs=2154) %>% 
+  left_join(read.csv2("tension.csv"),by="NT_LIT")
+
+IFO <- readRDS("IFO.RDS")  %>% filter(TYPE_IFO!="TRES_COURT") %>% filter(AN<2025) %>%
+mutate(CORROSION=as.factor(CORROSION)) %>% 
+select(ERX_ID,TYPE_IFO,ERX_DTDEB,ERX_DT_TOTH,NATURE,NATURE_SUP,SOURCE,CONFIGURATION,id,OUV_COD_NAT,ERX_COMMENT,
+       NT_LIT,HTB,DATE_AER,LONGUEUR_LA,DATE_COND,NATURE_COND,DATE_SUPPORT,NATURESUBJECTILE,CORROSION,AGE_SUP_MAX,DATE_SOUT,LONGUEUR_LS,TECHNOLOGIE,LONGUEUR_TOT,Q999) %>% 
+  mutate(AGE_IFO=ifelse(LONGUEUR_LA/LONGUEUR_TOT>0.9,as.numeric(as.Date(ERX_DTDEB)-DATE_AER)/365.25,
+                                                                  ifelse(LONGUEUR_LS/LONGUEUR_TOT>0.9,as.numeric(as.Date(ERX_DTDEB)-DATE_SOUT)/365.25,
+                                                                         as.numeric(as.Date(ERX_DTDEB)-pmin(DATE_AER,DATE_SOUT,na.rm=T))/365.25))) %>% 
+  mutate(NATURE_COND=ifelse(NATURE_COND=="ALUMINIUM+ACIER/ALMELEC+ACIER","ALU+ACIER\nALMELEC+ACIER",NATURE_COND))%>%
+  mutate(NATURE_COND=ifelse(NATURE_COND=="CUIVRE/ALUMINIUM","CUIVRE/ALU",NATURE_COND)) %>% 
+  mutate(TECHNOLOGIE=str_replace_all(TECHNOLOGIE,"Synthétique","Synth."))  %>% left_join(GAELA,by="OUV_COD_NAT") %>% mutate(GAELA_2025=coalesce(GAELA_2025,"Non éligible")) %>% 
+  mutate(NT_LIT=as.factor(NT_LIT),  CORROSION=as.factor(CORROSION),NATURE_COND=as.factor(NATURE_COND),NATURESUBJECTILE=as.factor(NATURESUBJECTILE),GAELA_2025=as.factor(GAELA_2025),TECHNOLOGIE=as.factor(TECHNOLOGIE))
+
+  
+IFO_LA <-IFO %>% filter(LONGUEUR_LA/LONGUEUR_TOT>0.9) %>% rename(DATE=DATE_AER) %>% rename(LONGUEUR=LONGUEUR_LA) %>%   filter(!is.na(DATE))  %>% filter(TYPE_IFO!="TRES_LONG") %>% 
+  mutate(DATE=as.Date(ifelse(is.na(DATE),as.Date(pmin(DATE_SUPPORT,DATE_COND,na.rm = T)),DATE),origin="1970-01-01")) %>%  filter(!is.na(DATE)) %>% 
+  mutate(AGE_IFO=as.numeric(as.Date(ERX_DTDEB)-DATE)/365.25) %>% 
+  mutate(VET_SUP=as.numeric(as.Date(ERX_DTDEB)-as.Date(DATE_SUPPORT))/(365.25*AGE_SUP_MAX)) %>% 
+  mutate(VET_COND=as.numeric(as.Date(ERX_DTDEB)-as.Date(DATE_COND))/(365.25*85)) %>%
+  mutate(VET_IFO=pmax(VET_COND,VET_SUP,na.rm=T))  %>% select(-VET_SUP,-VET_COND)  
+  
+IFO_LS <-IFO %>% filter(LONGUEUR_LS/LONGUEUR_TOT>0.9)  %>% rename(DATE=DATE_SOUT) %>% rename(LONGUEUR=LONGUEUR_LS) %>%  filter(!is.na(DATE))  %>% filter(TYPE_IFO!="TRES_LONG") %>%   
+  filter(!is.na(DATE)) %>% 
+  mutate(AGE_IFO=as.numeric(as.Date(ERX_DTDEB)-DATE)/365.25) %>%  
+  mutate(VET_IFO=AGE_IFO/35)
+
+```
+
+
+# Analyse patrimoniale des LIT
+
+## Cartographie des liaisons en 2024
+Cliquer sur les boutons en haut à gauche de la carte pour visualiser les liaisons selon différentes catégories.
+```{r, echo=FALSE}
+MAP <- LIT_XY %>% filter(AN_REF==2024) %>% select(OUV_COD_NAT,CONFIGURATION,NT_LIT,LONGUEUR,AGE,NATURE_COND,NATURESUBJECTILE,TECHNOLOGIE,HTB,Couleur) %>% st_simplify(dTolerance = 200) %>% st_transform(4326) %>% mutate(dashstyle=ifelse(CONFIGURATION=="Souterraine","5, 5","")) %>% filter(!OUV_COD_NAT %in% "CHAFAL41ZC.R5") %>% filter(!st_is_empty(geometry))
+
+pal_AGE <- colorNumeric(  palette = viridis::viridis(256, option = "magma", direction = -1),   domain = c(0, 120))
+pal_TEN <- colorFactor(    palette = c("#3b3b3b","#2a5dbd","#2aa53b","#ff2a2a","pink","#bf0054","#ff8000", "#b6592a","#acacac"),   domain = c("<45kV","150kV","225kV","400kV","45kV","63kV","90kV","COURANT CONTINU","HORS TENSION"))
+pal_CONFIG <- colorFactor(    palette = c("red", "green", "blue"),   domain = c("Aérienne","Aéro-souterraine","Souterraine"))
+pal_COND <- colorFactor(    palette = c("#f8766d","#a3a500", "#00b0f6", "#e76bf3"),   domain = c("ACSS/ACCR","ALMELEC","ALU+ACIER\nALMELEC+ACIER","CUIVRE/ALU"))
+pal_SUPPORT <- colorFactor(    palette = c("#f8766d", "#a3a500", "#00bf7d","#00b0f6","#e76bf3"),   domain = c("AG - Acier galva","AN - Acier noir","B - Bois","Be - Béton","NR - Autre"))
+
+
+text_popup <- function(OUV_COD_NAT,CONFIGURATION,NT_LIT,LONGUEUR,AGE,NATURE_COND,NATURESUBJECTILE,TECHNOLOGIE) { paste0(as.character(OUV_COD_NAT), "<br/>",  CONFIGURATION, "<br/>", "Tension: ", NT_LIT, "<br/>",
+                                                                          "Longueur : ",round(LONGUEUR/1000,1), " km<br/>","Age : ",round(AGE,1), " ans<br/>",
+                                                                           "Conducteur : ",NATURE_COND, "<br/>", "Suppport : ",NATURESUBJECTILE, "<br/>","Technologie : ",TECHNOLOGIE, "<br/>") }
+
+leaflet( MAP,options = leafletOptions(zoomControl = FALSE,zoomSnap = 0.1)) %>%
+  htmlwidgets::onRender(" function(el, x) {   el.style.height = '500px';  }") %>%
+  setView(lng=2.9,lat=46.9,zoom =5.7) %>%
+  addProviderTiles(providers$CartoDB.Positron,group="Plan",options=providerTileOptions(opacity=0.6)) %>%
+  addPolylines(group = "LIGNES_TOT",layerId =~OUV_COD_NAT,  weight =~2,opacity =1, dashArray =~dashstyle,  color=~pal_AGE(AGE),
+               popup=~text_popup(OUV_COD_NAT,CONFIGURATION,NT_LIT,LONGUEUR,AGE,NATURE_COND,NATURESUBJECTILE,TECHNOLOGIE))%>%
+  addLegend(pal=pal_AGE,values=c(0,120),position="bottomright",opacity=1,title="Age",layerId = "legend-age",className = "legend legend-age") %>%
+  addLegend(pal=pal_TEN,values=~NT_LIT,position="bottomright",opacity=1,title="Tension",layerId = "legend-tension",className = "legend legend-tension") %>%
+  addLegend(pal=pal_CONFIG,values=~CONFIGURATION,position="bottomright",opacity=1,title="Configuration",layerId = "legend-config",className = "legend legend-config") %>%
+  addLegend(pal=pal_COND,values=~NATURE_COND,position="bottomright",opacity=1,title="Conducteur",layerId = "legend-cond",className = "legend legend-cond") %>%
+  addLegend(pal=pal_SUPPORT,values=~NATURESUBJECTILE,position="bottomright",opacity=1,title="Support",layerId = "legend-support",className = "legend legend-support") %>%
+  htmlwidgets::onRender(" function(el, x) { console.log('el:', el);var ageLegend = el.querySelector('.legend-age');console.log('ageLegend:', ageLegend);
+  if (ageLegend) { ageLegend.style.backgroundColor = 'white';ageLegend.style.opacity = 1;  }}") %>%
+  htmlwidgets::onRender(" function(el, x) { console.log('el:', el);var tenLegend = el.querySelector('.legend-tension');console.log('tenLegend:', tenLegend);
+  if (tenLegend) {  tenLegend.style.display = 'none';tenLegend.style.backgroundColor = 'white';tenLegend.style.opacity = 1;}}") %>%
+  htmlwidgets::onRender(" function(el, x) { console.log('el:', el);var condLegend = el.querySelector('.legend-cond');console.log('condLegend:', condLegend);
+  if (condLegend) {  condLegend.style.display = 'none';condLegend.style.backgroundColor = 'white';condLegend.style.opacity = 1;  }}") %>%
+  htmlwidgets::onRender(" function(el, x) { console.log('el:', el);var configLegend = el.querySelector('.legend-config');console.log('configLegend:', configLegend);
+  if (configLegend) {  configLegend.style.display = 'none';configLegend.style.backgroundColor = 'white';configLegend.style.opacity = 1;  }}") %>%
+  htmlwidgets::onRender(" function(el, x) { console.log('el:', el);var supportLegend = el.querySelector('.legend-support');console.log('supportLegend:', supportLegend);
+  if (supportLegend) {  supportLegend.style.display = 'none';supportLegend.style.backgroundColor = 'white';supportLegend.style.opacity = 1;  }}") %>%
+  addEasyButtonBar(
+    easyButton(icon = "fa-hourglass",title = "AGE",
+               onClick = JS(sprintf("function(btn,map){var initial = %s;var layers = map.layerManager.getLayerGroup('LIGNES_TOT').getLayers();
+          var legend_age = map.getContainer().querySelector('.legend-age'); if (legend_age) { if (legend_age.style.display === 'none') {legend_age.style.display = 'block';  } else { legend_age.style.display = 'none';  }}
+          layers.forEach(function(layer,i){ var current = layer.options.color;var target = initial[i];layer.setStyle({color: target});});}", jsonlite::toJSON(pal_AGE(MAP$AGE))))),
+    easyButton(icon = "fa-plug", title = "TENSION",
+               onClick = JS(sprintf("function(btn,map){var initial = %s;var layers = map.layerManager.getLayerGroup('LIGNES_TOT').getLayers();
+          var legend_ten = map.getContainer().querySelector('.legend-tension'); if (legend_ten) { if (legend_ten.style.display === 'none') {legend_ten.style.display = 'block';  } else { legend_ten.style.display = 'none';  }}
+          layers.forEach(function(layer,i){ var current = layer.options.color;var target = initial[i];layer.setStyle({color: target});});}",jsonlite::toJSON(pal_TEN(MAP$NT_LIT))))),
+    easyButton(icon = "fa-bolt", title = "CONFIG",
+               onClick = JS(sprintf("function(btn,map){var initial = %s;var layers = map.layerManager.getLayerGroup('LIGNES_TOT').getLayers();
+          var legend_config = map.getContainer().querySelector('.legend-config'); if (legend_config) { if (legend_config.style.display === 'none') {legend_config.style.display = 'block';  } else { legend_config.style.display = 'none';  }}
+          layers.forEach(function(layer,i){ var current = layer.options.color;var target = initial[i];layer.setStyle({color: target});});}",jsonlite::toJSON(pal_CONFIG(MAP$CONFIGURATION)) ))),
+    easyButton(icon = "fa-anchor", title = "CONDUCTEUR",
+               onClick = JS(sprintf("function(btn,map){var initial = %s;var layers = map.layerManager.getLayerGroup('LIGNES_TOT').getLayers();
+          var legend_cond = map.getContainer().querySelector('.legend-cond'); if (legend_cond) { if (legend_cond.style.display === 'none') {legend_cond.style.display = 'block';  } else { legend_cond.style.display = 'none';  }}
+          layers.forEach(function(layer,i){ var current = layer.options.color;var target = initial[i];layer.setStyle({color: target});});}",jsonlite::toJSON(pal_COND(MAP$NATURE_COND))))),
+    easyButton(icon = "fa-link", title = "SUPPORT",
+               onClick = JS(sprintf("function(btn,map){var initial = %s;var layers = map.layerManager.getLayerGroup('LIGNES_TOT').getLayers();
+          var legend_sup = map.getContainer().querySelector('.legend-support'); if (legend_sup) { if (legend_sup.style.display === 'none') {legend_sup.style.display = 'block';  } else { legend_sup.style.display = 'none';  }}
+          layers.forEach(function(layer,i){ var current = layer.options.color;var target = initial[i];layer.setStyle({color: target});});}", jsonlite::toJSON(pal_SUPPORT(MAP$NATURESUBJECTILE)))))
+  )
+
+```
+
+
+## Etat des lieux des liaisons en 2024  {.tabset }
+
+### Toutes liaisons  {.tabset }
+```{r echo=FALSE,fig.height=7,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+choix <- data_frame(type=c("CONFIGURATION","HTB","NT_LIT"),lib=c("Type LIT","Domaine Tension","Tension"))
+LIT_2024 <- LIT %>% filter(AN_REF==2024)
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+print(cowplot::plot_grid(histo_LIT(LIT_2024,choix$type[i]), violin_LIT(LIT_2024,choix$type[i]), nrow = 2))
+cat("  \n")
+}
+```
+
+
+### Liaisons aériennes  {.tabset }
+```{r echo=FALSE,fig.height=8,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+choix <- data_frame(type=c("NT_LIT","NATURE_COND","NATURESUBJECTILE","CORROSION"),lib=c("Tension","Conducteur","Support","Corrosion"))
+LIT_2024 <- LA %>% filter(AN_REF==2024)
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+print(cowplot::plot_grid(histo_LIT(LIT_2024,choix$type[i]),histo_LIT_VET(LIT_2024,choix$type[i]), violin_LIT(LIT_2024,choix$type[i]),pie_LIT(LIT_2024,choix$type[i]),ncol=2, nrow = 2))
+cat("  \n")
+}
+```
+
+### Liaisons souterraines  {.tabset }
+```{r echo=FALSE,fig.height=8,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+choix <- data_frame(type=c("NT_LIT","TECHNOLOGIE"),lib=c("Tension","Techno"))
+LIT_2024 <- LS %>% filter(AN_REF==2024)
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+print(cowplot::plot_grid(histo_LIT(LIT_2024,choix$type[i]),histo_LIT_VET(LIT_2024,choix$type[i]), violin_LIT(LIT_2024,choix$type[i]),pie_LIT(LIT_2024,choix$type[i]),ncol=2, nrow = 2))
+cat("  \n")
+}
+```
+
+
+
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+eq_tension <- data.frame(
+TENS_NUM=c("1","2","3","4","5","6","7","9"),
+TENSION=c("HTA","45 kV","63kV","90 kV","150 kV","225 kV","400 kV","HVDC"),
+TENSION_SUP=c("HTA","HTB1","HTB1","HTB1","HTB2","HTB2","HTB3","HVDC")
+)
+
+TX_LIGNES <- readRDS("TX_LIGNES_F.RDS")    %>%
+  filter(!is.na(CM)) %>% filter(!substr(id,1,1) %in% c(".","1","0","2")) %>%
+  rename(AN=caseyear) %>%
+  mutate(TENS_NUM=substr(id,7,7)) %>%
+  mutate(CM=ifelse(CM=="TE NORMANDIE PARIS","CM-NTR",CM)) %>%
+  left_join(eq_tension,by="TENS_NUM") %>%
+  filter(NB>4000)
+
+choix <- data_frame(type=c("TENSION_SUP","TYPE"),lib=c("Tension","Type"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n###",  choix$lib[i], " \n")
+  print(cowplot::plot_grid(T95_LIT(TX_LIGNES,choix$type[i]), T95_LIT_M(TX_LIGNES,choix$type[i]), ncol = 2))
+  cat("  \n")
+}
+```
+
+
+### Cartographie T95> 70%
+
+```{r, echo=FALSE}
+
+
+TX2024 <- TX_LIGNES %>%
+  filter(AN==2024) %>%
+  filter(Q95<1.1) %>%
+  filter(Q95>0.7) %>%
+  mutate(COUL=ifelse(TENSION_SUP=="HTB1","deepskyblue",ifelse(TENSION_SUP=="HTB2","chartreuse",ifelse(TENSION_SUP=="HTB3","tomato","gray")))) %>% mutate(COUL=as.character(COUL)) %>%
+  rename(OUV_COD_NAT=id) %>%
+  # select(OUV_COD_NAT=id,COUL,TENSION,Q95,Q99,Q999) %>%
+  left_join(LIT_XY %>% select(OUV_COD_NAT),by="OUV_COD_NAT") %>% st_as_sf(crs=2154) %>% st_transform(4326)
+
+
+leaflet(options = leafletOptions(zoomControl = FALSE,zoomSnap = 0.1)) %>%
+  htmlwidgets::onRender("function(el, x) {
+    el.style.height = '500px';
+  }") %>%
+  setView(lng=2.9,lat=46.9,zoom =5.7) %>%
+  addProviderTiles(providers$CartoDB.Positron,group="Plan",options=providerTileOptions(opacity=0.6)) %>%
+  addPolylines( data =TX2024%>% filter(!st_is_empty(geometry)),
+    layerId =~OUV_COD_NAT,    group = "Lignes RTE",    color=~COUL,    weight =~3,opacity =1,
+    popup=~paste0(as.character(OUV_COD_NAT), "<br/>",
+                  "Tension: ", TENSION,"kV", "<br/>",
+                  "Q95 : ", round(Q95*100,2), "<br/>"    )) %>%
+          addLegend(data=  data.frame(Couleur=c("deepskyblue","chartreuse","tomato"),espace=c("HTB1","HTB2","HTB3")),
+              position="bottomright",colors=~Couleur,labels=~espace,opacity=1,title="Q95")
+
+```
+
+
+# Analyse des indisponibilités fortuites Siquael
+
+
+On récupère l'ensemble des indisponibilités fortuites (IFO) >20 min sur les liaisons valides depuis SIQUAEL.
+IFO courtes: < 120h, IFO longues : > 120h
+On retire de l'échantillon les IFO>4000h. En effet, il existe des IFO qui ne sont pas réparées rapidement en raison du faible de niveau de service des liaisons ce qui fausse les taux d'indisponibilités à prendre en compte.
+
+## Typologie des IFO  {.tabset }
+
+
+### Nombre {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("TYPE_IFO","CONFIGURATION","HTB","NATURESUBJECTILE","NATURE_COND"),lib=c("Type IFO","Type LIT","Tension","Support","Conducteur"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+print(cowplot::plot_grid(GRAPH_IFO_NB(IFO,choix$type[i],"AN_IFO","RIEN")$nbIFO,
+                   GRAPH_IFO_NB(IFO,choix$type[i],"AN_IFO","RIEN")$pie_nbIFO,
+                   GRAPH_IFO_NB(IFO,choix$type[i],"AGE_IFO","RIEN")$nbIFO, nrow=3))
+  cat("  \n")
+}
+
+```
+
+### Temps {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("TYPE_IFO","CONFIGURATION","HTB","NATURESUBJECTILE","NATURE_COND"),lib=c("Type IFO","Type LIT","Tension","Support","Conducteur"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+print(cowplot::plot_grid( GRAPH_IFO_NB(IFO,choix$type[i],"AN_IFO","RIEN")$tempsIFO,
+                          GRAPH_IFO_NB(IFO,choix$type[i],"AN_IFO","RIEN")$pie_tempsIFO,
+                          GRAPH_IFO_NB(IFO,choix$type[i],"AGE_IFO","RIEN")$tempsIFO,nrow=3))
+  cat("  \n")
+}
+
+```
+
+
+## Cartographie des IFO  {.tabset }
+
+### Nature
+```{r echo=FALSE,fig.height=7,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+IFO_XY <- IFO %>% filter(TYPE_IFO %in% c("COURT","LONG")) %>% left_join(LIT_XY %>% st_centroid() %>% select(OUV_COD_NAT),by="OUV_COD_NAT") %>% st_as_sf(crs=2154) %>% st_jitter() %>% st_transform(4326)
+pal_IFO <- colorFactor(    palette = c("#e76bf3","#00bf7d", "#f8766d", "#00b0f6","#a3a500"),   domain = c("AUTRE/INDETERMINE","CLIENT/EXPLOIT/SYSTEME","ENVIRONNEMENT","FH/AGRESSION","MATERIEL"))
+
+
+leaflet(IFO_XY ,options = leafletOptions(zoomControl = FALSE,zoomSnap = 0.1)) %>%
+  htmlwidgets::onRender("function(el, x) {  el.style.height = '500px';}") %>%
+  setView(lng=2.9,lat=46.9,zoom =5.7) %>%
+  addProviderTiles(providers$CartoDB.Positron,group="Plan",options=providerTileOptions(opacity=0.6)) %>%
+  addLegend(pal=pal_IFO,values=~NATURE_SUP,position="bottomright",opacity=1,title="Nature") %>%
+  addCircleMarkers(radius=~pmin(pmax(2,0.6*sqrt(ERX_DT_TOTH)),20),weight =0.5,stroke=TRUE,color="black",fillOpacity=1,
+                     fillColor = ~pal_IFO(NATURE_SUP),
+                     layerId = ~ERX_ID,
+                     popup =  ~paste0(as.character(OUV_COD_NAT), "<br/>","Tension: ", NT_LIT,"kV", "<br/>","Date IFO: ", as.Date(ERX_DTDEB), "<br/>","Durée IFO: ", round(ERX_DT_TOTH,1),"h", "<br/>",
+                                      "Circonstance IFO: ", NATURE_SUP, "<br/>","Nature IFO: ", NATURE, "<br/>","Source indispo: ", SOURCE, "<br/>",
+                                      "<br/>",
+                                      "Commentaire: ", ERX_COMMENT, "<br/>"
+                                      ))
+```
+
+
+### Taux de défaillance
+Sur une période de suivi de 12 ans sur les liaisons actuelles.
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LIT_XY %>% filter(AN_REF==2024)%>% left_join(IFO %>% filter(TYPE_IFO!="TRES_LONG") %>%  group_by(id) %>% tally(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>% mutate(TX=round(DEF/AN_SURV,2)) %>% select(OUV_COD_NAT,id,NT_LIT,VERSION_TOT,n,LONGUEUR,AN_SURV,DEF,TX) %>%
+  st_simplify(dTolerance = 200) %>% st_transform(4326) %>%
+  st_transform(4326)  %>% filter(!OUV_COD_NAT %in% c("CHAFAL41ZC.R5","VIELML61ZC.SE","DAMBRL61ZCARR","I.JOUL41ZPIOU","SSCRIL31ZBUZY","BUZY L31ZBUZY")) %>% filter(!st_is_empty(geometry)) %>%
+  mutate(TX2=ifelse(TX>2,2,TX))
+
+
+pal_TX <- colorNumeric(  palette = viridis::viridis(256, option = "magma", direction =1),   domain = c(0, 2))
+
+
+leaflet(options = leafletOptions(zoomControl = FALSE,zoomSnap = 0.1)) %>%
+  htmlwidgets::onRender(" function(el, x) {   el.style.height = '500px';  }") %>%
+  setView(lng=2.9,lat=46.9,zoom =5.7) %>%
+  addProviderTiles(providers$CartoDB.Positron,group="Plan",options=providerTileOptions(opacity=0.6)) %>%
+  addPolylines(data=LIT_TX %>% filter(TX!=0),group = "LIGNES_TOT",layerId =~id, opacity =1,
+               weight =~(sqrt(20*(TX2)+0.01)), color=~pal_TX(TX2),
+               popup=~paste0(as.character(OUV_COD_NAT), "<br/>","Version : ", VERSION_TOT, "<br/>","Tension: ", NT_LIT, "<br/>",
+                             "Nombre de défaillances : ", n, "<br/>","Nb années : ", AN_SURV, "<br/>","Taux de défaillance annuel : ", TX, "<br/>")) %>%
+    addPolylines(data=LIT_TX %>% filter(TX==0),group = "LIGNES_ZERO",layerId =~id, opacity =1, weight =0.5, color=~"grey",
+               popup=~paste0(as.character(OUV_COD_NAT), "<br/>","Version : ", VERSION_TOT, "<br/>","Tension: ", NT_LIT, "<br/>",
+                             "Nombre de défaillances : ", n, "<br/>","Nb années : ", AN_SURV, "<br/>","Taux de défaillance annuel : ", TX, "<br/>"))%>%
+  addLegend(pal=pal_TX,values=c(0,2),position="bottomright",opacity=1,title="Taux de déf.")
+
+
+
+```
+
+
+### Durée de défaillance
+Sur une période de suivi de 12 ans sur les liaisons actuelles.
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LIT_XY %>% filter(AN_REF==2024)%>% left_join(IFO %>% filter(TYPE_IFO!="TRES_LONG") %>%  group_by(id) %>%  summarize(n=sum(ERX_DT_TOTH,na.rm=T)),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>% mutate(TX=round(DEF/AN_SURV,2)) %>% select(OUV_COD_NAT,id,NT_LIT,VERSION_TOT,n,LONGUEUR,AN_SURV,DEF,TX) %>%
+  st_simplify(dTolerance = 200) %>% st_transform(4326) %>%
+  st_transform(4326)  %>% filter(!OUV_COD_NAT %in% c("CHAFAL41ZC.R5","VIELML61ZC.SE","DAMBRL61ZCARR","I.JOUL41ZPIOU","SSCRIL31ZBUZY","BUZY L31ZBUZY")) %>% filter(!st_is_empty(geometry)) %>%
+   mutate(TX2=ifelse(TX>200,200,TX))
+
+
+pal_TX <- colorNumeric(  palette = viridis::viridis(256, option = "magma", direction =1),   domain = c(0, 200))
+
+
+leaflet(options = leafletOptions(zoomControl = FALSE,zoomSnap = 0.1)) %>%
+  htmlwidgets::onRender(" function(el, x) {   el.style.height = '500px';  }") %>%
+  setView(lng=2.9,lat=46.9,zoom =5.7) %>%
+  addProviderTiles(providers$CartoDB.Positron,group="Plan",options=providerTileOptions(opacity=0.6)) %>%
+  addPolylines(data=LIT_TX %>% filter(TX!=0),group = "LIGNES_TOT",layerId =~id, opacity =1,
+               weight =~(sqrt(0.2*(TX2)+0.01)), color=~pal_TX(TX2),
+               popup=~paste0(as.character(OUV_COD_NAT), "<br/>","Version : ", VERSION_TOT, "<br/>","Tension: ", NT_LIT, "<br/>",
+                             "Durée de défaillances : ", n, "<br/>","Nb années : ", AN_SURV, "<br/>","Durée de défaillance annuelle : ", TX, "<br/>")) %>%
+    addPolylines(data=LIT_TX %>% filter(TX==0),group = "LIGNES_ZERO",layerId =~id, opacity =1, weight =0.5, color=~"grey",
+               popup=~paste0(as.character(OUV_COD_NAT), "<br/>","Version : ", VERSION_TOT, "<br/>","Tension: ", NT_LIT, "<br/>",
+                             "Durée de défaillances : ", round(n,1), "h<br/>","Nb années : ", AN_SURV, "<br/>","Durée de défaillance annuelle : ", round(TX,1), "h par an<br/>"))%>%
+  addLegend(pal=pal_TX,values=c(0,200),position="bottomright",opacity=1,title="Durée de déf. annuelle")
+
+```
+
+
+
+
+
+
+
+
+## Durée des IFO  {.tabset }
+Pour la suite, on considèrera une liaison aérienne si la longueur aérienne dépasse 90% du total. De même, on considèrera une liaison souterraine si la longueur souterraine dépasse 90% du total.
+
+### Liaisons aériennes {.tabset}
+
+```{r echo=FALSE,fig.height=6,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("TYPE_IFO","NT_LIT","HTB","CORROSION","NATURE_COND","NATURESUBJECTILE","GAELA_2025"),lib=c("Tout","Tension","Niv. Tension","Corrosion","Conducteur","Support","Eligible GAELA"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+print(cowplot::plot_grid(violintemps_IFO(IFO_LA,"COURT",choix$type[i],130,10)+ggtitle("Temps des IFO courtes"),
+                         violintemps_IFO(IFO_LA,"LONG",choix$type[i],3000,200)+ggtitle("Temps des IFO longues"), ncol = 2))
+cat("  \n")
+}
+cat("  \n#### Age\n")
+print(cowplot::plot_grid(violintempsage_IFO(IFO_LA,"COURT",130,10)+ggtitle("Temps des IFO courtes"),
+                         violintempsage_IFO(IFO_LA,"LONG",3000,200)+ggtitle("Temps des IFO longues"), ncol = 2))
+
+```
+
+
+### Liaisons souterraines {.tabset}
+
+```{r echo=FALSE,fig.height=6,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+choix <- data_frame(type=c("TYPE_IFO","NT_LIT","HTB","TECHNOLOGIE"),lib=c("Tout","Tension","Niv. Tension","Technologie"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+print(cowplot::plot_grid(violintemps_IFO(IFO_LS,"COURT",choix$type[i],130,10)+ggtitle("Temps des IFO courtes"),
+                         violintemps_IFO(IFO_LS,"LONG",choix$type[i],3000,200)+ggtitle("Temps des IFO longues"), ncol = 2))
+cat("  \n")
+}
+cat("  \n#### Age\n")
+print(cowplot::plot_grid(violintempsage_IFO(IFO_LS,"COURT",130,10)+ggtitle("Temps des IFO courtes"),
+                         violintempsage_IFO(IFO_LS,"LONG",3000,200)+ggtitle("Temps des IFO longues"), ncol = 2))
+```
+
+
+
+## Caractéristiques des IFO  {.tabset }
+
+### Liaisons aériennes  {.tabset }
+
+#### IFO courtes {.tabset }
+##### Nombre {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("NATURE_SUP","NATURE","SOURCE","HTB"),lib=c("Nature sup.","Nature","Source","Tension"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n######",  choix$lib[i], " \n")
+print(cowplot::plot_grid(GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","COURT")$nbIFO,
+                         GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","COURT")$violin_nbIFO,
+                         GRAPH_IFO_NB(IFO_LA,choix$type[i],"AN_IFO","COURT")$pie_nbIFO,nrow=3))
+  cat("  \n")
+}
+
+```
+
+##### Temps {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("NATURE_SUP","NATURE","SOURCE","HTB"),lib=c("Nature sup.","Nature","Source","Tension"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n######",  choix$lib[i], " \n")
+print(cowplot::plot_grid(GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","COURT")$tempsIFO,
+                         GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","COURT")$violin_tempsIFO,
+                         GRAPH_IFO_NB(IFO_LA,choix$type[i],"AN_IFO","COURT")$pie_tempsIFO,nrow=3))
+  cat("  \n")
+}
+
+```
+
+
+##### Taux d'IFO par liaison.an
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LA %>% left_join(IFO_LA %>% filter(TYPE_IFO=="COURT") %>%  group_by(id) %>% tally(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>% mutate(TX=DEF/AN_SURV) %>%
+  mutate(CAT_LONG=(round(LONGUEUR/10000,0)*10)) %>% mutate(CAT_LONG=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=ifelse(CAT_AGE>70,"70+","70-")) %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET))
+
+
+LIT_TX %>%    tbl_custom_summary(    include = c(HTB,CAT_LONG,NATURESUBJECTILE,NATURE_COND,CAT_AGE,CAT_VET,GAELA_2025),    stat_fns = ~ ratio_summary("DEF", "AN_SURV"),
+    statistic = ~"{ratio} [{conf.low} - {conf.high}] ({num}/{denom})",    digits = ~ c(4, 4, 4, 0, 0),    overall_row = TRUE,    overall_row_label = "Total"  ) %>%    bold_labels()
+
+```
+
+##### Temps d'IFO par liaison.an
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LA %>% left_join(IFO_LA %>% filter(TYPE_IFO=="COURT") %>%  group_by(id) %>% summarize(n=sum(ERX_DT_TOTH,na.rm=T)),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>% mutate(TX=DEF/AN_SURV) %>%
+  mutate(CAT_LONG=(round(LONGUEUR/10000,0)*10)) %>% mutate(CAT_LONG=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=ifelse(CAT_AGE>70,"70+","70-")) %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET))
+
+
+LIT_TX %>%    tbl_custom_summary(    include = c(HTB,CAT_LONG,NATURESUBJECTILE,NATURE_COND,CAT_AGE,CAT_VET,GAELA_2025),    stat_fns = ~ ratio_summary("DEF", "AN_SURV"),
+    statistic = ~"{ratio} [{conf.low} - {conf.high}] ({num}/{denom})",    digits = ~ c(4, 4, 4, 0, 0),    overall_row = TRUE,    overall_row_label = "Total"  ) %>%    bold_labels()
+
+```
+
+
+#### IFO longues {.tabset }
+##### Nombre {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("NATURE_SUP","NATURE","SOURCE","HTB"),lib=c("Nature sup.","Nature","Source","Tension"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n######",  choix$lib[i], " \n")
+print(cowplot::plot_grid(GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","LONG")$nbIFO,
+                         GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","LONG")$violin_nbIFO,
+                         GRAPH_IFO_NB(IFO_LA,choix$type[i],"AN_IFO","LONG")$pie_nbIFO,nrow=3))
+  cat("  \n")
+}
+
+```
+
+##### Temps {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("NATURE_SUP","NATURE","SOURCE","HTB"),lib=c("Nature sup.","Nature","Source","Tension"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n######",  choix$lib[i], " \n")
+print(cowplot::plot_grid( GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","LONG")$tempsIFO,
+                          GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","LONG")$violin_tempsIFO,
+                          GRAPH_IFO_NB(IFO_LA,choix$type[i],"AN_IFO","LONG")$pie_tempsIFO,nrow=3))
+  cat("  \n")
+}
+
+```
+
+##### Taux d'IFO par liaison.an
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LA %>% left_join(IFO_LA %>% filter(TYPE_IFO=="LONG") %>%  group_by(id) %>% tally(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>%
+  mutate(CAT_LONG=(round(LONGUEUR/10000,0)*10)) %>% mutate(CAT_LONG=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=ifelse(CAT_AGE>70,"70+","70-")) %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET))
+
+
+LIT_TX %>%    tbl_custom_summary(    include = c(HTB,CAT_LONG,NATURESUBJECTILE,NATURE_COND,CAT_AGE,CAT_VET,GAELA_2025),    stat_fns = ~ ratio_summary("DEF", "AN_SURV"),
+    statistic = ~"{ratio} [{conf.low} - {conf.high}] ({num}/{denom})",    digits = ~ c(4, 4, 4, 0, 0),    overall_row = TRUE,    overall_row_label = "Total"  ) %>%    bold_labels()
+
+```
+
+##### Temps d'IFO par liaison.an
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LA %>% left_join(IFO_LA %>% filter(TYPE_IFO=="LONG") %>%  group_by(id) %>% summarize(n=sum(ERX_DT_TOTH,na.rm=T)),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>%
+  mutate(CAT_LONG=(round(LONGUEUR/10000,0)*10)) %>% mutate(CAT_LONG=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=ifelse(CAT_AGE>70,"70+","70-")) %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET))
+
+
+LIT_TX %>%    tbl_custom_summary(    include = c(HTB,CAT_LONG,NATURESUBJECTILE,NATURE_COND,CAT_AGE,CAT_VET,GAELA_2025),    stat_fns = ~ ratio_summary("DEF", "AN_SURV"),
+    statistic = ~"{ratio} [{conf.low} - {conf.high}] ({num}/{denom})",    digits = ~ c(4, 4, 4, 0, 0),    overall_row = TRUE,    overall_row_label = "Total"  ) %>%  bold_labels()
+
+```
+
+
+
+### Liaisons souterraines  {.tabset }
+
+#### IFO courtes {.tabset }
+##### Nombre {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("NATURE_SUP","NATURE","SOURCE","HTB"),lib=c("Nature sup.","Nature","Source","Tension"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n######",  choix$lib[i], " \n")
+print(cowplot::plot_grid(GRAPH_IFO_NB(IFO_LS,choix$type[i],"AGE_IFO","COURT")$nbIFO,
+                         GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","COURT")$violin_nbIFO,
+                         GRAPH_IFO_NB(IFO_LS,choix$type[i],"AN_IFO","COURT")$pie_nbIFO,nrow=3))
+  cat("  \n")
+}
+
+```
+
+##### Temps {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("NATURE_SUP","NATURE","SOURCE","HTB"),lib=c("Nature sup.","Nature","Source","Tension"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n######",  choix$lib[i], " \n")
+print(cowplot::plot_grid( GRAPH_IFO_NB(IFO_LS,choix$type[i],"AGE_IFO","COURT")$tempsIFO,
+                          GRAPH_IFO_NB(IFO_LA,choix$type[i],"AGE_IFO","COURT")$violin_tempsIFO,
+                         GRAPH_IFO_NB(IFO_LS,choix$type[i],"AN_IFO","COURT")$pie_tempsIFO,nrow=3))
+  cat("  \n")
+}
+
+```
+
+
+
+##### Taux d'IFO par liaison.an
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LS %>% left_join(IFO_LS %>% filter(TYPE_IFO=="COURT") %>%  group_by(id) %>% tally(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>%
+  mutate(CAT_LONG=(round(LONGUEUR/10000,0)*10)) %>% mutate(CAT_LONG=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=ifelse(CAT_AGE>40,"40+","40-")) %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET))
+
+
+LIT_TX %>%    tbl_custom_summary(    include = c(HTB,CAT_LONG,TECHNOLOGIE,CAT_AGE,CAT_VET),    stat_fns = ~ ratio_summary("DEF", "AN_SURV"),
+    statistic = ~"{ratio} [{conf.low} - {conf.high}] ({num}/{denom})",    digits = ~ c(4, 4, 4, 0, 0),    overall_row = TRUE,    overall_row_label = "Total"  ) %>%    bold_labels()
+
+```
+
+##### Temps d'IFO par liaison.an
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LS %>% left_join(IFO_LS %>% filter(TYPE_IFO=="COURT") %>%  group_by(id) %>% summarize(n=sum(ERX_DT_TOTH,na.rm=T)),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>%
+  mutate(CAT_LONG=(round(LONGUEUR/10000,0)*10)) %>% mutate(CAT_LONG=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=ifelse(CAT_AGE>40,"40+","40-")) %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET))
+
+
+LIT_TX %>%    tbl_custom_summary(    include = c(HTB,CAT_LONG,NATURESUBJECTILE,NATURE_COND,CAT_AGE,CAT_VET,GAELA_2025),    stat_fns = ~ ratio_summary("DEF", "AN_SURV"),
+    statistic = ~"{ratio} [{conf.low} - {conf.high}] ({num}/{denom})",    digits = ~ c(4, 4, 4, 0, 0),    overall_row = TRUE,    overall_row_label = "Total"  ) %>%  bold_labels()
+
+```
+
+
+#### IFO longues {.tabset }
+##### Nombre {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("NATURE_SUP","NATURE","SOURCE","HTB"),lib=c("Nature sup.","Nature","Source","Tension"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n######",  choix$lib[i], " \n")
+print(cowplot::plot_grid(GRAPH_IFO_NB(IFO_LS,choix$type[i],"AGE_IFO","LONG")$nbIFO,
+                         GRAPH_IFO_NB(IFO_LS,choix$type[i],"AGE_IFO","LONG")$violin_nbIFO,
+                         GRAPH_IFO_NB(IFO_LS,choix$type[i],"AN_IFO","LONG")$pie_nbIFO,nrow=3))
+  cat("  \n")
+}
+
+```
+
+##### Temps {.tabset }
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("NATURE_SUP","NATURE","SOURCE","HTB"),lib=c("Nature sup.","Nature","Source","Tension"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n######",  choix$lib[i], " \n")
+print(cowplot::plot_grid(GRAPH_IFO_NB(IFO_LS,choix$type[i],"AGE_IFO","LONG")$tempsIFO,
+                         GRAPH_IFO_NB(IFO_LS,choix$type[i],"AGE_IFO","LONG")$violin_tempsIFO,
+                         GRAPH_IFO_NB(IFO_LS,choix$type[i],"AN_IFO","LONG")$pie_tempsIFO,nrow=3))
+  cat("  \n")
+}
+
+```
+
+
+##### Taux d'IFO par liaison.an
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LS %>% left_join(IFO_LS %>% filter(TYPE_IFO=="LONG") %>%  group_by(id) %>% tally(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>%
+  mutate(CAT_LONG=(round(LONGUEUR/10000,0)*10)) %>% mutate(CAT_LONG=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=ifelse(CAT_AGE>40,"40+","40-")) %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET))
+
+
+LIT_TX %>%   tbl_custom_summary(    include = c(HTB,CAT_LONG,TECHNOLOGIE,CAT_AGE,CAT_VET),    stat_fns = ~ ratio_summary("DEF", "AN_SURV"),
+    statistic = ~"{ratio} [{conf.low} - {conf.high}] ({num}/{denom})",    digits = ~ c(4, 4, 4, 0, 0),    overall_row = TRUE,    overall_row_label = "Total"  ) %>%    bold_labels()
+```
+
+
+##### Temps d'IFO par liaison.an
+```{r echo=FALSE,fig.height=10,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+LIT_TX <- LS %>% left_join(IFO_LS %>% filter(TYPE_IFO=="LONG") %>%  group_by(id) %>% summarize(n=sum(ERX_DT_TOTH,na.rm=T)),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(DEF=coalesce(n,0))%>%
+  mutate(CAT_LONG=(round(LONGUEUR/10000,0)*10)) %>% mutate(CAT_LONG=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=ifelse(CAT_AGE>40,"40+","40-")) %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET))
+
+
+LIT_TX %>%    tbl_custom_summary(    include = c(HTB,CAT_LONG,NATURESUBJECTILE,NATURE_COND,CAT_AGE,CAT_VET,GAELA_2025),    stat_fns = ~ ratio_summary("DEF", "AN_SURV"),
+    statistic = ~"{ratio} [{conf.low} - {conf.high}] ({num}/{denom})",    digits = ~ c(4, 4, 4, 0, 0),    overall_row = TRUE,    overall_row_label = "Total"  ) %>%  bold_labels()
+
+```
+
+
+
+## Estimation des événements réccurents {.tabset }
+
+On calcule le MCF (mean cumulative function) c'est à dire, le nombre cumulé d'IFO selon l'âge de la LIT qu'on peut associer à l'estimateur de Nelson-Aalen à l'IFO.
+
+
+### Liaisons aériennes {.tabset}
+
+#### IFO courtes {.tabset}
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("","NT_LIT","HTB","CORROSION","NATURE_COND","NATURESUBJECTILE","GAELA_2025"),lib=c("Tous","Tension","Niv. Tension","Corrosion","Conducteur","Support","Eligible GAELA"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n#####",  choix$lib[i], " \n")
+  a <- COURBE_NA_T(RECUR_T,LA,IFO_LA,"TYPE_IFO","COURT",choix$type[i])%>%  mutate(segment = floor(time /15)) %>%  group_by(segment,type) %>%  nest() %>%
+    mutate(   slope = map_dbl(data, ~ coef(lm(mcf ~ time, data = .x))["time"]), data = map2(data, slope, ~ mutate(.x, segment_slope  = .y))) %>%  unnest(cols = c(data)) %>%  ungroup()
+  b <- COURBE_NA_T(RECUR_VET,LA,IFO_LA,"TYPE_IFO","COURT",choix$type[i])
+print(cowplot::plot_grid(a %>% GRAPH_RECUR(120,10,22,2,"Age de la LIT","Nombre d'IFO cumulé","IFO courtes à l'âge des LA"),
+                         b %>% GRAPH_RECUR(2,0.2,22,2,"Vétusté de la LIT","Nombre d'IFO cumulé","IFO courtes à la vétusté des LA"), ncol = 2))
+print(a%>% GRAPH_PENTE(120,10,0.7,0.05,"Age de la LIT","Défaillance annuelle","Espérance de défaillance annuelle COURT selon âge")+   geom_line(aes(x=time,y=slope,fill=type,color=type),size=1))
+cat("  \n")
+}
+```
+
+#### IFO longues {.tabset}
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("","NT_LIT","HTB","CORROSION","NATURE_COND","NATURESUBJECTILE","GAELA_2025"),lib=c("Tous","Tension","Niv. Tension","Corrosion","Conducteur","Support","Eligible GAELA"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n#####",  choix$lib[i], " \n")
+  a <- COURBE_NA_T(RECUR_T,LA,IFO_LA,"TYPE_IFO","LONG",choix$type[i])%>%  mutate(segment = floor(time /15)) %>%  group_by(segment,type) %>%  nest() %>%
+    mutate(   slope = map_dbl(data, ~ coef(lm(mcf ~ time, data = .x))["time"]), data = map2(data, slope, ~ mutate(.x, segment_slope  = .y))) %>%  unnest(cols = c(data)) %>%  ungroup()
+  b <- COURBE_NA_T(RECUR_VET,LA,IFO_LA,"TYPE_IFO","LONG",choix$type[i])
+print(cowplot::plot_grid(a %>% GRAPH_RECUR(120,10,6,1,"Age de la LIT","Nombre d'IFO cumulé","IFO longues à l'âge des LA"),
+                         b %>% GRAPH_RECUR(2,0.2,6,1,"Vétusté de la LIT","Nombre d'IFO cumulé","IFO longues à la vétusté des LA"), ncol = 2))
+print(a%>% GRAPH_PENTE(120,10,0.1,0.01,"Age de la LIT","Défaillance annuelle","Espérance de défaillance annuelle LONG selon âge")+   geom_line(aes(x=time,y=slope,fill=type,color=type),size=1))
+cat("  \n")
+}
+```
+
+
+### Liaisons souterraines {.tabset}
+
+#### IFO courtes {.tabset}
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("","NT_LIT","HTB","TECHNOLOGIE"),lib=c("Tous","Tension","Niv. Tension","Technologie"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n#####",  choix$lib[i], " \n")
+  a <- COURBE_NA_T(RECUR_T,LS,IFO_LS,"TYPE_IFO","COURT",choix$type[i])%>%  mutate(segment = floor(time /15)) %>%  group_by(segment,type) %>%  nest() %>%
+    mutate(   slope = map_dbl(data, ~ coef(lm(mcf ~ time, data = .x))["time"]), data = map2(data, slope, ~ mutate(.x, segment_slope  = .y))) %>%  unnest(cols = c(data)) %>%  ungroup()
+  b <- COURBE_NA_T(RECUR_VET,LS,IFO_LS,"TYPE_IFO","COURT",choix$type[i])
+print(cowplot::plot_grid(a %>% GRAPH_RECUR(100,10,12,1,"Age de la LIT","Nombre d'IFO cumulé","IFO courtes à l'âge des LS"),
+                         b %>% GRAPH_RECUR(2.8,0.2,12,1,"Vétusté de la LIT","Nombre d'IFO cumulé","IFO courtes à la vétusté des LS"), ncol = 2))
+print(a%>% GRAPH_PENTE(100,10,0.7,0.05,"Age de la LIT","Défaillance annuelle","Espérance de défaillance annuelle COURT selon âge")+   geom_line(aes(x=time,y=slope,fill=type,color=type),size=1))
+cat("  \n")
+}
+```
+
+
+#### IFO longues {.tabset}
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("","NT_LIT","HTB","TECHNOLOGIE"),lib=c("Tous","Tension","Niv. Tension","Technologie"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n#####",  choix$lib[i], " \n")
+  a <- COURBE_NA_T(RECUR_T,LS,IFO_LS,"TYPE_IFO","LONG",choix$type[i])%>%  mutate(segment = floor(time /15)) %>%  group_by(segment,type) %>%  nest() %>%
+    mutate(   slope = map_dbl(data, ~ coef(lm(mcf ~ time, data = .x))["time"]), data = map2(data, slope, ~ mutate(.x, segment_slope  = .y))) %>%  unnest(cols = c(data)) %>%  ungroup()
+  b <- COURBE_NA_T(RECUR_VET,LS,IFO_LS,"TYPE_IFO","LONG",choix$type[i])
+print(cowplot::plot_grid(a %>% GRAPH_RECUR(100,10,12,1,"Age de la LIT","Nombre d'IFO cumulé","IFO longues à l'âge des LS"),
+                         b %>% GRAPH_RECUR(2.8,0.2,12,1,"Vétusté de la LIT","Nombre d'IFO cumulé","IFO longues à la vétusté des LS"), ncol = 2))
+print(a%>% GRAPH_PENTE(120,10,1,0.05,"Age de la LIT","Défaillance annuelle","Espérance de défaillance annuelle LONG selon âge")+   geom_line(aes(x=time,y=slope,fill=type,color=type),size=1))
+cat("  \n")
+}
+```
+
+
+## Temps cumulé d'indisponibilité {.tabset }
+
+En détournant la fonction MCF (mean cumulative function) pour calculer les événements réccurents, on peut cumuler le temps des indisponibilités au lieu de compter simplement les indisponibilités.
+Dans ce cadre, il est désormais inutile de distinguer IFO courtes et IFO longues puisque la durée d'indisponibilité est intégrée.
+
+
+
+### Liaisons aériennes {.tabset}
+
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("","NT_LIT","HTB","CORROSION","NATURE_COND","NATURESUBJECTILE","GAELA_2025"),lib=c("Tous","Tension","Niv. Tension","Corrosion","Conducteur","Support","Eligible GAELA"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+   a <- COURBE_NA_T_TEMPS(RECUR_T,LA,IFO_LA,"","",choix$type[i]) %>%  mutate(segment = floor(time /15)) %>%  group_by(segment,type) %>%  nest() %>%
+    mutate(   slope = map_dbl(data, ~ coef(lm(mcf ~ time, data = .x))["time"]), data = map2(data, slope, ~ mutate(.x, segment_slope  = .y))) %>%  unnest(cols = c(data)) %>%  ungroup()
+   b <- COURBE_NA_T_TEMPS(RECUR_VET,LA,IFO_LA,"","",choix$type[i])
+
+print(cowplot::plot_grid(a%>% GRAPH_RECUR(120,10,1500,100,"Age de la LIT","Temps cumulé d'IFO","Durée d'indisponibilité cumulée selon âge"),
+                         b%>% GRAPH_RECUR(2,0.2,1500,100,"Vétusté de la LIT","Temps cumulé d'IFO","Durée d'indisponibilité cumulée selon vétusté"), ncol = 2))
+
+print(a%>% GRAPH_PENTE(120,10,70,10,"Age de la LIT","Indisponibilité annuelle","Espérance d'indisponibilité annuelle selon âge")+   geom_line(aes(x=time,y=slope,fill=type,color=type),size=1))
+cat("  \n")
+}
+
+```
+
+### Liaisons souterraines {.tabset}
+
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+choix <- data_frame(type=c("","HTB"),lib=c("Tous","Niv. Tension"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+
+   a <- COURBE_NA_T_TEMPS(RECUR_T,LS,IFO_LS,"","",choix$type[i]) %>%  mutate(segment = floor(time /15)) %>%  group_by(segment,type) %>%  nest() %>%
+  mutate(   slope = map_dbl(data, ~ coef(lm(mcf ~ time, data = .x))["time"]), data = map2(data, slope, ~ mutate(.x, segment_slope  = .y))) %>%  unnest(cols = c(data)) %>%  ungroup()
+   b <- COURBE_NA_T_TEMPS(RECUR_VET,LS,IFO_LS,"","",choix$type[i])
+
+print(cowplot::plot_grid(a%>% GRAPH_RECUR(100,10,2400,200,"Age de la LIT","Temps cumulé d'IFO","Durée d'indisponibilité cumulée selon âge"),
+                         b%>% GRAPH_RECUR(2.8,0.2,2400,200,"Vétusté de la LIT","Temps cumulé d'IFO","Durée d'indisponibilité cumulée selon vétusté"), ncol = 2))
+
+print(a%>% GRAPH_PENTE(100,10,140,10,"Age de la LIT","Indisponibilité annuelle","Espérance d'indisponibilité annuelle selon âge")+   geom_line(aes(x=time,y=slope,fill=type,color=type),size=1))
+cat("  \n")
+}
+
+```
+
+
+
+# Modélisation de la régression du taux de défaillance
+
+On regarde pour chaque variable s'il y a une corrélation avec le taux de défaillance annuel historique constaté sur les ouvrages.<br>
+On utilise ainsi plusieurs modèles de régresssion :<br>
+- modèle de régression simple linéaire : lm<br>
+- modèle de Poisson : glm (adapté pour le comptage)<br>
+- modèle binomial négatif : glmnb (dérivé du modèle de Poisson pour prendre en compte la surdispersion)<br>
+- modèle zéro inflation binomial négatif : zipnb (pour prendre en compte que le taux est nul sur de nombreux ouvrages)<br>
+
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+LIT_TX_LA <- LA %>% left_join(IFO_LA %>%  group_by(id) %>% summarize(nt=sum(ERX_DT_TOTH,na.rm=T),nb=n()) %>% ungroup(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(nb=coalesce(nb,0)) %>%
+  mutate(nt=coalesce(nt,0)) %>%
+  mutate(TX=nb/AN_SURV) %>%
+  mutate(TXT=nt/AN_SURV) %>%
+  mutate(LONGUEUR=LONGUEUR/1000) %>%
+  mutate(CAT_LONG=(round(LONGUEUR/10,0)*10)) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_LONG_=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG_=as.factor(CAT_LONG_)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_AGE_=ifelse(CAT_AGE>80,"80+","80-")) %>% mutate(CAT_AGE_=as.factor(CAT_AGE_)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET)) %>%
+  mutate(CAT_Q=ifelse(Q999<0.8,"<0.8",">0.8")) %>% mutate(CAT_Q=as.factor(CAT_Q)) %>%
+  mutate(NT_LIT=relevel(as.factor(NT_LIT), ref = "63kV")) %>%
+  mutate(NATURE_COND=relevel(as.factor(NATURE_COND), ref = "ALMELEC")) %>%
+  mutate(NATURESUBJECTILE=relevel(as.factor(NATURESUBJECTILE), ref = "AG - Acier galva")) %>%
+  mutate(GAELA_2025=relevel(as.factor(GAELA_2025), ref = "Non éligible")) %>%
+  mutate(HTB=relevel(as.factor(HTB), ref = "HTB1"))
+
+
+LIT_TX_LAC <- LA %>% left_join(IFO_LA %>% filter(TYPE_IFO=="COURT") %>%   group_by(id) %>% summarize(nt=sum(ERX_DT_TOTH,na.rm=T),nb=n()) %>% ungroup(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(nb=coalesce(nb,0)) %>%
+  mutate(nt=coalesce(nt,0)) %>%
+  mutate(TX=nb/AN_SURV) %>%
+  mutate(TXT=nt/AN_SURV) %>%
+  mutate(LONGUEUR=LONGUEUR/1000) %>%
+  mutate(CAT_LONG=(round(LONGUEUR/10,0)*10)) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_LONG_=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG_=as.factor(CAT_LONG_)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_AGE_=ifelse(CAT_AGE>80,"80+","80-")) %>% mutate(CAT_AGE_=as.factor(CAT_AGE_)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET)) %>%
+  mutate(CAT_Q=ifelse(Q999<0.8,"<0.8",">0.8")) %>% mutate(CAT_Q=as.factor(CAT_Q)) %>%
+  mutate(NT_LIT=relevel(as.factor(NT_LIT), ref = "63kV")) %>%
+  mutate(NATURE_COND=relevel(as.factor(NATURE_COND), ref = "ALMELEC")) %>%
+  mutate(NATURESUBJECTILE=relevel(as.factor(NATURESUBJECTILE), ref = "AG - Acier galva")) %>%
+  mutate(GAELA_2025=relevel(as.factor(GAELA_2025), ref = "Non éligible")) %>%
+  mutate(HTB=relevel(as.factor(HTB), ref = "HTB1"))
+
+
+LIT_TX_LAL <- LA %>% left_join(IFO_LA %>% filter(TYPE_IFO=="LONG") %>%   group_by(id) %>% summarize(nt=sum(ERX_DT_TOTH,na.rm=T),nb=n()) %>% ungroup(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(nb=coalesce(nb,0)) %>%
+  mutate(nt=coalesce(nt,0)) %>%
+  mutate(TX=nb/AN_SURV) %>%
+  mutate(TXT=nt/AN_SURV) %>%
+  mutate(LONGUEUR=LONGUEUR/1000) %>%
+  mutate(CAT_LONG=(round(LONGUEUR/10,0)*10)) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_LONG_=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG_=as.factor(CAT_LONG_)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_AGE_=ifelse(CAT_AGE>80,"80+","80-")) %>% mutate(CAT_AGE_=as.factor(CAT_AGE_)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET)) %>%
+  mutate(CAT_Q=ifelse(Q999<0.8,"<0.8",">0.8")) %>% mutate(CAT_Q=as.factor(CAT_Q)) %>%
+  mutate(NT_LIT=relevel(as.factor(NT_LIT), ref = "63kV")) %>%
+  mutate(NATURE_COND=relevel(as.factor(NATURE_COND), ref = "ALMELEC")) %>%
+  mutate(NATURESUBJECTILE=relevel(as.factor(NATURESUBJECTILE), ref = "AG - Acier galva")) %>%
+  mutate(GAELA_2025=relevel(as.factor(GAELA_2025), ref = "Non éligible")) %>%
+  mutate(HTB=relevel(as.factor(HTB), ref = "HTB1"))
+
+
+
+LIT_TX_LS <- LS %>% left_join(IFO_LS %>%  group_by(id) %>% summarize(nt=sum(ERX_DT_TOTH,na.rm=T),nb=n()) %>% ungroup(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(nb=coalesce(nb,0)) %>%
+  mutate(nt=coalesce(nt,0)) %>%
+  mutate(TX=nb/AN_SURV) %>%
+  mutate(TXT=nt/AN_SURV) %>%
+  mutate(LONGUEUR=LONGUEUR/1000) %>%
+  mutate(CAT_LONG=(round(LONGUEUR/10,0)*10)) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_LONG_=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG_=as.factor(CAT_LONG_)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_AGE_=ifelse(CAT_AGE>50,"50+","50-")) %>% mutate(CAT_AGE_=as.factor(CAT_AGE_)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET)) %>%
+  mutate(CAT_Q=ifelse(Q999<0.8,"<0.8",">0.8")) %>% mutate(CAT_Q=as.factor(CAT_Q)) %>%
+  mutate(NT_LIT=relevel(as.factor(NT_LIT), ref = "63kV")) %>%
+  mutate(HTB=relevel(as.factor(HTB), ref = "HTB1"))
+
+LIT_TX_LSC <- LS %>% left_join(IFO_LS %>% filter(TYPE_IFO=="COURT") %>%  group_by(id) %>% summarize(nt=sum(ERX_DT_TOTH,na.rm=T),nb=n()) %>% ungroup(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(nb=coalesce(nb,0)) %>%
+  mutate(nt=coalesce(nt,0)) %>%
+  mutate(TX=nb/AN_SURV) %>%
+  mutate(TXT=nt/AN_SURV) %>%
+  mutate(LONGUEUR=LONGUEUR/1000) %>%
+  mutate(CAT_LONG=(round(LONGUEUR/10,0)*10)) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_LONG_=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG_=as.factor(CAT_LONG_)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_AGE_=ifelse(CAT_AGE>50,"50+","50-")) %>% mutate(CAT_AGE_=as.factor(CAT_AGE_)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET)) %>%
+  mutate(CAT_Q=ifelse(Q999<0.8,"<0.8",">0.8")) %>% mutate(CAT_Q=as.factor(CAT_Q)) %>%
+  mutate(NT_LIT=relevel(as.factor(NT_LIT), ref = "63kV")) %>%
+  mutate(HTB=relevel(as.factor(HTB), ref = "HTB1"))
+
+LIT_TX_LSL <- LS %>% left_join(IFO_LS %>% filter(TYPE_IFO=="LONG") %>%  group_by(id) %>% summarize(nt=sum(ERX_DT_TOTH,na.rm=T),nb=n()) %>% ungroup(),by="id") %>%
+  mutate(AN_SURV=(DT_FIN-DT_DEB+1)) %>%
+  mutate(nb=coalesce(nb,0)) %>%
+  mutate(nt=coalesce(nt,0)) %>%
+  mutate(TX=nb/AN_SURV) %>%
+  mutate(TXT=nt/AN_SURV) %>%
+  mutate(LONGUEUR=LONGUEUR/1000) %>%
+  mutate(CAT_LONG=(round(LONGUEUR/10,0)*10)) %>% mutate(CAT_LONG=as.factor(CAT_LONG)) %>%
+  mutate(CAT_LONG_=ifelse(CAT_LONG>30,"30+","30-")) %>% mutate(CAT_LONG_=as.factor(CAT_LONG_)) %>%
+  mutate(CAT_AGE=(round(AGE/10,0)*10))  %>% mutate(CAT_AGE=as.factor(CAT_AGE)) %>%
+  mutate(CAT_AGE_=ifelse(CAT_AGE>50,"50+","50-")) %>% mutate(CAT_AGE_=as.factor(CAT_AGE_)) %>%
+  mutate(CAT_VET=(round(VET*10,0)/10))  %>% mutate(CAT_VET=ifelse(CAT_VET>1,"1+","1-")) %>% mutate(CAT_VET=as.factor(CAT_VET)) %>%
+  mutate(CAT_Q=ifelse(Q999<0.8,"<0.8",">0.8")) %>% mutate(CAT_Q=as.factor(CAT_Q)) %>%
+  mutate(NT_LIT=relevel(as.factor(NT_LIT), ref = "63kV")) %>%
+  mutate(HTB=relevel(as.factor(HTB), ref = "HTB1"))
+
+```
+
+## Longueur {.tabset }
+
+### Liaisons aériennes {.tabset}
+La corrélation à la longueur est seulement valable pour le 225 kV et 400 kV. Il n'y a pas significativité pour le HTB1 et le 150 kV.
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+LIT_TX <- LIT_TX_LA
+
+choix <- data_frame(type=c("","63kV","90kV","150kV","225kV","400kV"),lib=c("Tous","63kV","90kV","150kV","225kV","400kV"),xmax=c(250,60,60,90,140,250))
+
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+  print(GRAPH_LM(MODELE_LIT_TX(LIT_TX,choix$type[i],"LONGUEUR")$DATA,choix$xmax[i],"Taux défaillance annuel selon la longueur",0.06,"Longueur des LIT (km)"))
+  print(MODELE_LIT_TX(LIT_TX,choix$type[i],"LONGUEUR")$perf %>% kable(caption="Performance des modèles"))
+  print(summary(MODELE_LIT_TX(LIT_TX,choix$type[i],"LONGUEUR")$mod)$coefficients %>% as.data.frame() %>%   mutate(term = rownames(.),term = if_else(row_number() == 2, "LONGUEUR", term)) %>%  select(term, everything()) %>% as_tibble() %>%   kable(caption="Coefficients modèle binomal négatif"))
+cat("  \n")
+}
+
+```
+
+
+### Liaisons souterraines {.tabset}
+On n'observe pas de corrélation avec la longueur.
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+LIT_TX <- LIT_TX_LS
+
+choix <- data_frame(type=c("","63kV","90kV","225kV"),lib=c("Tous","63kV","90kV","225kV"),xmax=c(100,60,60,100))
+
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+  print(GRAPH_LM(MODELE_LIT_TX(LIT_TX,choix$type[i],"LONGUEUR")$DATA,choix$xmax[i],"Taux défaillance annuel selon la longueur",0.05,"Longueur des LIT (km)"))
+  print(MODELE_LIT_TX(LIT_TX,choix$type[i],"LONGUEUR")$perf %>% kable(caption="Performance des modèles"))
+  print(summary(MODELE_LIT_TX(LIT_TX,choix$type[i],"LONGUEUR")$mod)$coefficients %>% as.data.frame() %>%   mutate(term = rownames(.),term = if_else(row_number() == 2, "LONGUEUR", term)) %>%  select(term, everything()) %>% as_tibble() %>%   kable(caption="Coefficients modèle binomal négatif"))
+cat("  \n")
+}
+
+
+```
+
+
+
+
+## Age {.tabset }
+
+### Liaisons aériennes {.tabset}
+On observe une corrélation avec l'âge quelque soit le niveau de tension.
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+LIT_TX <- LIT_TX_LA
+
+choix <- data_frame(type=c("","63kV","90kV","150kV","225kV","400kV"),lib=c("Tous","63kV","90kV","150kV","225kV","400kV"),xmax=c(120,120,120,120,120,120))
+
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+  print(GRAPH_LM(MODELE_LIT_TX(LIT_TX,choix$type[i],"AGE")$DATA,choix$xmax[i],"Taux défaillance annuel selon l'âge",0.06,"Age des LIT"))
+  print(MODELE_LIT_TX(LIT_TX,choix$type[i],"AGE")$perf %>% kable(caption="Performance des modèles"))
+  print(summary(MODELE_LIT_TX(LIT_TX,choix$type[i],"AGE")$mod)$coefficients %>% as.data.frame() %>%   mutate(term = rownames(.),term = if_else(row_number() == 2, "AGE", term)) %>%  select(term, everything()) %>% as_tibble() %>%   kable(caption="Coefficients modèle binomal négatif"))
+cat("  \n")
+}
+
+
+```
+
+
+### Liaisons souterraines {.tabset}
+On observe une corrélation avec l'âge hormis 90 kV où c'est peu significatif.
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+LIT_TX <- LIT_TX_LS
+
+
+choix <- data_frame(type=c("","63kV","90kV","225kV"),lib=c("Tous","63kV","90kV","225kV"),xmax=c(100,100,70,70))
+
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+  print(GRAPH_LM(MODELE_LIT_TX(LIT_TX,choix$type[i],"AGE")$DATA,choix$xmax[i],"Taux défaillance annuel selon l'âge",0.06,"Age des LIT"))
+  print(MODELE_LIT_TX(LIT_TX,choix$type[i],"AGE")$perf %>% kable(caption="Performance des modèles"))
+  print(summary(MODELE_LIT_TX(LIT_TX,choix$type[i],"AGE")$mod)$coefficients %>% as.data.frame() %>%   mutate(term = rownames(.),term = if_else(row_number() == 2, "AGE", term)) %>%  select(term, everything()) %>% as_tibble() %>%   kable(caption="Coefficients modèle binomal négatif"))
+cat("  \n")
+}
+
+
+
+```
+
+
+## Données catégorielles {.tabset }
+
+### Liaisons aériennes {.tabset }
+On observe une corrélation avec la tension hormis HTA, le support, le conducteur, la corrosion, l'éligibilité GAELA, le niveau de flux.
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+LIT_TX <- LIT_TX_LA
+
+choix <- data_frame(type=c("NT_LIT","NATURE_COND","NATURESUBJECTILE","CORROSION","GAELA_2025","CAT_Q"),
+                    lib=c("Tension","Conducteur","Support","Corrosion","GAELA 2025","Niveau de flux >80%"),leg=c("Tension","Conducteur","Support","Corrosion","GAELA 2025","Niveau de flux >80%"))
+
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+  print(GRAPH_LM_F(MODELE_LIT_TX(LIT_TX,"",choix$type[i])$DATA,"Taux défaillance annuel",0.06,choix$leg[i]))
+  print(MODELE_LIT_TX(LIT_TX,"",choix$type[i])$perf %>% kable(caption="Performance des modèles"))
+  print(summary(MODELE_LIT_TX(LIT_TX,"",choix$type[i])$mod)$coefficients  %>%   kable(caption="Coefficients modèle binomal négatif"))
+cat("  \n")
+}
+
+
+```
+
+
+### Liaisons souterraines {.tabset }
+On observe une corrélation qu'avec la tension sur la HTA et HTB1
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+LIT_TX <- LIT_TX_LS
+
+choix <- data_frame(type=c("NT_LIT","TECHNOLOGIE","CAT_Q"),
+                    lib=c("Tension","Technologie","Niveau de flux >80%"),leg=c("Tension","Technologie","Niveau de flux >80%"))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+  print(GRAPH_LM_F(MODELE_LIT_TX(LIT_TX,"",choix$type[i])$DATA,"Taux défaillance annuel",0.06,choix$leg[i]))
+  print(MODELE_LIT_TX(LIT_TX,"",choix$type[i])$perf %>% kable(caption="Performance des modèles"))
+  print(summary(MODELE_LIT_TX(LIT_TX,"",choix$type[i])$mod)$coefficients  %>%   kable(caption="Coefficients modèle binomal négatif"))
+cat("  \n")
+}
+
+```
+
+
+
+## Choix des déterminants multiples {.tabset }
+
+A travers l'ensemble des modèles utilisés, le modèle binomial négatif est le meilleur. <br>
+Il sert à modéliser des comptages (nombre d’événements, incidents, pannes, etc.), comme un modèle de Poisson, mais il est plus flexible en prenant en compte la surdispersion.<br>
+On distingue ici les IFO courtes des IFO longues.
+
+
+### Liaisons aériennes  {.tabset }
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+
+choix <- data_frame(type=c("LIT_TX_LAC","LIT_TX_LAL"),lib=c("IFO courtes","IFO longues"),xmin=c(0.006,0.01),xmax=c(20,1),ymin=c(0.006,0.003),ymax=c(1,1))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+  
+LIT_TX <- get(choix$type[i])
+
+cat(paste0("Modélisation binomiale négative avec l'ensemble des paramètres"))
+model <- MASS::glm.nb(nb ~  NT_LIT + LONGUEUR  + AGE+VET+ Q999+CORROSION+NATURE_COND+NATURESUBJECTILE+GAELA_2025 + offset(log(AN_SURV)), data =  LIT_TX)
+
+anova(model, test="Chisq") %>% as.data.frame() %>%  rownames_to_column("Variable") %>%
+  mutate_at(vars(3), ~ round(., 2)) %>%mutate_at(vars(5), ~ round(., 1)) %>% mutate_at(vars(6), ~ formatC(., format = "e", digits = 1)) %>%
+  kable(caption="Analyse de la variance ANOVA")%>% kable_styling(full_width = FALSE) %>%row_spec(0:length(attr(terms(model), "term.labels"))+1, extra_css = "line-height: 0.4;") %>%  print()
+
+cat(paste0("L'âge et la tension sont les variables les plus explicatives. La longueur est secondaire, on la prend tout de même, on voyait principalement un effet sur le 225kV et le 400 kV lorsq'on testait indépendamment la corrélation à la longueur.L'âge est plus explicatif que la vétusté."))
+
+car::vif(model)%>%  as.data.frame() %>% rownames_to_column("Variable") %>%
+  mutate_at(vars(2), ~ round(., 2)) %>%mutate_at(vars(4), ~ round(., 4)) %>%
+  kable(caption="Détermination des variables colinéaires- VIF")  %>%kable_styling(full_width = FALSE) %>% row_spec(0:length(attr(terms(model), "term.labels")), extra_css = "line-height: 0.4;") %>%  print()
+
+
+cat(paste0("La vétusté est colinéaire à l'âge"))
+cat("  \n") 
+
+cat(paste0("On recalcule le nouveau modèle selon l'âge la tension et la longueur"))
+
+model <- MASS::glm.nb(nb ~  NT_LIT + LONGUEUR  + AGE+ offset(log(AN_SURV)), data =  LIT_TX)
+cat("  \n") 
+
+LIT_TX$pearson_res <- FALSE
+LIT_TX$pearson_res[which(DHARMa::simulateResiduals(model)$scaledResiduals > 0.99)] <- TRUE 
+
+
+cat(paste0("On détermine le ratio de dipersion de Pearson pour estimer la surdispersion"))
+print((sum(residuals(model, type = "pearson")^2) / df.residual(model)) %>%   kable(caption="ratio de dipersion de Pearson "))
+cat(paste0("Il y a encore de la surdispersion malgré l'adoption d'un modèle binomial négatif"))
+
+cat("  \n") 
+cat(paste0("Test DHARMA QQ-plot"))
+DHARMa::plotQQunif(DHARMa::simulateResiduals(model))
+
+cat("  \n") 
+cat(paste0("On détermine les outliers du modèle à partir des valeurs des résidus de Pearson"))
+print(ggplot(LIT_TX, aes(y = fitted(model)/AN_SURV, x = TX, color = pearson_res)) +
+  geom_point() +  
+  scale_color_manual(values = c("black","red")) +
+  labs(title = "Outliers des résidus de Pearson",y = "Taux modélisé du binomial négatif", x = "Taux de défaillance annuel") +  theme_bw()+   
+  theme(text=element_text(size=14),panel.grid.major = element_line(color = "gray", size =0.2),legend.text = element_text(size = 10),
+  legend.key.size = unit(0.45, "cm")) +
+    scale_x_log10(limits=c(choix$xmin[i],choix$xmax[i]),breaks = seq(0,choix$xmax[i],0.1)) +
+    scale_y_log10(limits=c(choix$ymin[i],choix$ymax[i]),breaks = seq(0,choix$ymax[i],0.1))) 
+cat(paste0("Il y a de 1% d'outliers qui dégradent la modélisation"))
+cat("  \n") 
+
+
+cat(paste0("On retire les outliers pour améliorer le modèle"))
+LIT_TX <- LIT_TX %>% filter(pearson_res==FALSE)
+model_outlier <- MASS::glm.nb(nb ~  NT_LIT + LONGUEUR  + AGE+ offset(log(AN_SURV)), data =  LIT_TX)
+
+performance::compare_performance(model,model_outlier)%>% as.data.frame() %>% select(1:3,BIC)%>%  
+  kable(caption="Tableau de performance") %>%kable_styling(full_width = FALSE) %>% row_spec(1:2, extra_css = "line-height: 0.7;")  %>% print()
+
+cat(paste0("En retirant 1% des données, on améliore significativement le modèle"))
+
+cat("  \n") 
+cat(paste0("Test DHARMA QQ-plot"))
+DHARMa::plotQQunif(DHARMa::simulateResiduals(model_outlier))
+
+
+cat("  \n") 
+cat(paste0("On détermine le ratio de dipersion de Pearson pour estimer la surdispersion"))
+print((sum(residuals(model_outlier, type = "pearson")^2) / df.residual(model_outlier)) %>%   kable(caption="ratio de dipersion de Pearson"))
+
+
+summary(model_outlier)$coefficients[c(1,3,4,5,7,8,9),] %>% as.data.frame()  %>% rename(pvalue=4) %>% mutate(exp(Estimate))%>% 
+  mutate_at(vars(1:3), ~ round(., 2)) %>%
+  mutate_at(vars(5), ~ round(., 4)) %>% mutate_at(vars(4), ~ formatC(., format = "e", digits = 1)) %>%
+  kable(caption="Coefficients du modèle (exp)") %>%kable_styling(full_width = FALSE,bootstrap_options = c("hover", "condensed")) %>% row_spec(1:7, extra_css = "line-height: 0.5;") %>% print()
+  
+
+cat(paste0("On peut également tester un modèle d'arbre Rpart, pour couper en branches le taux de défaillance\n"))
+modele_rpart <- rpart(TX ~ LONGUEUR + AGE + NT_LIT,data = LIT_TX,method = "anova",
+                      control = rpart.control(xval = 30, cp = 0,minbucket =round(nrow(LIT_TX)/10,0),maxdepth=2))
+best_cp <- modele_rpart$cptable[which.min(modele_rpart$cptable[, "xerror"]), "CP"]
+modele_rpart_opt <-prune(modele_rpart, cp = best_cp)
+
+invisible(rpart.plot(modele_rpart_opt, type = 2, extra = 101, under = TRUE,main = "Arbre Rpart du taux de défaillance"))
+cat(paste0("L'arbre est plus difficilement interprétable, on préferera garder le modèle binomial négatif\n"))
+
+
+assign(paste0("model_LA", i), model_outlier)
+}
+
+
+```
+
+
+
+### Liaisons souterraines {.tabset }
+```{r echo=FALSE,fig.height=5,fig.width=12,out.width='100%',message=FALSE,results="asis"}
+
+choix <- data_frame(type=c("LIT_TX_LSC","LIT_TX_LSL"),lib=c("IFO courtes","IFO longues"),xmin=c(0.05,0.007),xmax=c(4,2),ymin=c(0.05,0.003),ymax=c(1,1))
+
+for(i in 1:nrow(choix)) {
+  cat("  \n####",  choix$lib[i], " \n")
+  
+LIT_TX <- get(choix$type[i])
+
+cat(paste0("Modélisation binomiale négative avec l'ensemble des paramètres"))
+model <- MASS::glm.nb(nb ~  NT_LIT + LONGUEUR  + AGE+ Q999+TECHNOLOGIE + offset(log(AN_SURV)), data =  LIT_TX)
+
+anova(model, test="Chisq") %>% as.data.frame() %>%  rownames_to_column("Variable") %>%
+  mutate_at(vars(3), ~ round(., 2)) %>%mutate_at(vars(5), ~ round(., 1)) %>% mutate_at(vars(6), ~ formatC(., format = "e", digits = 1)) %>%
+  kable(caption="Analyse de la variance ANOVA")%>% kable_styling(full_width = FALSE) %>%row_spec(0:length(attr(terms(model), "term.labels"))+1, extra_css = "line-height: 0.4;") %>%  print()
+
+cat(paste0("L'âge et la tension sont les variables les plus explicatives, la longueur ne l'est pas"))
+cat("  \n") 
+
+
+cat(paste0("On recalcule le nouveau modèle selon l'âge la tension "))
+cat("  \n") 
+model <- MASS::glm.nb(nb ~  NT_LIT  + AGE+ offset(log(AN_SURV)), data =  LIT_TX)
+
+LIT_TX$pearson_res <- FALSE
+LIT_TX$pearson_res[which(DHARMa::simulateResiduals(model)$scaledResiduals > 0.995)] <- TRUE 
+
+cat(paste0("On détermine le ratio de dipersion de Pearson pour estimer la surdispersion"))
+print((sum(residuals(model, type = "pearson")^2) / df.residual(model)) %>%   kable(caption="ratio de dipersion de Pearson"))
+cat(paste0("Il y a encore de la surdispersion malgré l'adoption d'un modèle binomial négatif"))
+cat("  \n") 
+cat(paste0("Test DHARMA QQ-plot"))
+DHARMa::plotQQunif(DHARMa::simulateResiduals(model)) 
+cat(paste0("QQ-plot modélisé passe les tests"))
+
+cat(paste0("On détermine les outliers du modèle à partir des valeurs des résidus de Pearson"))
+ggplot(LIT_TX, aes(y = fitted(model)/AN_SURV, x = TX, color = pearson_res)) +
+  geom_point() +
+  scale_color_manual(values = c("black","red")) +
+  labs(title = "Outliers des résidus de Pearson",y = "Taux modélisé du binomial négatif", x = "Taux de défaillance annuel") +  theme_bw()+
+  theme(text=element_text(size=14),panel.grid.major = element_line(color = "gray", size =0.2),legend.text = element_text(size = 10),
+  legend.key.size = unit(0.45, "cm")) +
+  scale_x_log10(limits=c(choix$xmin[i],choix$xmax[i]),breaks = seq(0,choix$xmax[i],0.1)) +
+  scale_y_log10(limits=c(choix$ymin[i],choix$ymax[i]),breaks = seq(0,choix$ymax[i],0.1)) %>% print()
+cat(paste0("Il y a de 1% d'outliers qui dégradent la modélisation"))
+cat("  \n") 
+
+cat(paste0("On retire les outliers pour améliorer le modèle"))
+LIT_TX <- LIT_TX %>% filter(pearson_res==FALSE)
+model_outlier <- MASS::glm.nb(nb ~  NT_LIT  + AGE+ offset(log(AN_SURV)), data =  LIT_TX)
+
+performance::compare_performance(model,model_outlier)%>% as.data.frame() %>% select(1:3,BIC)%>%  
+  kable(caption="Tableau de performance") %>%kable_styling(full_width = FALSE) %>% row_spec(1:2, extra_css = "line-height: 0.7;")  %>% print()
+cat(paste0("En retirant 1% des données, on améliore significativement le modèle"))
+cat("  \n") 
+cat(paste0("Test DHARMA QQ-plot"))
+DHARMa::plotQQunif(DHARMa::simulateResiduals(model_outlier))
+
+
+cat(paste0("On détermine le ratio de dipersion de Pearson pour estimer la surdispersion"))
+print((sum(residuals(model_outlier, type = "pearson")^2) / df.residual(model_outlier)) %>%   kable(caption="ratio de dipersion de Pearson "))
+
+summary(model_outlier)$coefficients[c(1,4,7,9),] %>% as.data.frame()  %>% rename(pvalue=4) %>% mutate(exp(Estimate))%>% 
+  mutate_at(vars(1:3), ~ round(., 2)) %>%
+  mutate_at(vars(5), ~ round(., 4)) %>% mutate_at(vars(4), ~ formatC(., format = "e", digits = 1)) %>%
+  kable(caption="Coefficients du modèle (exp)") %>%kable_styling(full_width = FALSE,bootstrap_options = c("hover", "condensed")) %>% row_spec(1:4, extra_css = "line-height: 0.5;") %>% print()
+
+
+
+cat(paste0("On peut également tester un modèle d'arbre Rpart, pour couper en branches le taux de défaillance\n"))
+modele_rpart <- rpart(TX ~ LONGUEUR + AGE + NT_LIT,data = LIT_TX,method = "anova",
+                      control = rpart.control(xval = 30, cp = 0,minbucket =round(nrow(LIT_TX)/10,0),maxdepth=2))
+best_cp <- modele_rpart$cptable[which.min(modele_rpart$cptable[, "xerror"]), "CP"]
+modele_rpart_opt <-prune(modele_rpart, cp = best_cp)
+
+invisible(rpart.plot(modele_rpart_opt, type = 2, extra = 101, under = TRUE,main = "Arbre Rpart du taux de défaillance"))
+cat(paste0("L'arbre est plus difficilement interprétable, on préferera garder le modèle binomial négatif\n"))
+
+assign(paste0("model_LS", i), model_outlier)
+}
+
+
+```
